@@ -149,22 +149,30 @@
     }, { passive: false });
 
     // タッチ制御
+    let touchStartTime = 0;
+    let startPoint = { x: 0, y: 0 };
+
+    // タッチ制御の強化版
     overlay.addEventListener('touchstart', (e) => {
         if (isUITarget(e)) return;
-        touchMoved = false;
+        
+        touchStartTime = Date.now(); // 触れた時間を記録
+        const touch = e.touches[0];
+        startPoint = { x: touch.pageX, y: touch.pageY };
+        
         if (e.touches.length === 2) {
             initialPinchDistance = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
         } else {
             isDragging = true;
-            startX = e.touches[0].pageX - posX;
-            startY = e.touches[0].pageY - posY;
+            startX = touch.pageX - posX;
+            startY = touch.pageY - posY;
         }
         resetIdleTimer();
     });
 
     overlay.addEventListener('touchmove', (e) => {
         if (isUITarget(e)) return;
-        touchMoved = true;
+        
         if (e.touches.length === 2) {
             const dist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
             scale = Math.min(Math.max(1, scale * (dist / initialPinchDistance)), 5);
@@ -179,12 +187,23 @@
 
     overlay.addEventListener('touchend', (e) => {
         if (isUITarget(e)) return;
-        if (!touchMoved) { // 純粋なタップの場合のみメニュー切り替え
-            handleInteraction(e.changedTouches[0].pageX);
-        } else if (scale === 1) { // 拡大してない時のスワイプ
-            const diffX = e.changedTouches[0].pageX - (startX + posX);
-            if (Math.abs(diffX) > 60) nextPrev(diffX > 0 ? -1 : 1);
+        
+        const touchEndTime = Date.now();
+        const duration = touchEndTime - touchStartTime; // 触れていた時間
+        const endTouch = e.changedTouches[0];
+        const moveDist = Math.hypot(endTouch.pageX - startPoint.x, endTouch.pageY - startPoint.y);
+
+        // --- 判定ロジック ---
+        // 1. 触れていた時間が短く(250ms以内)、かつ指がほとんど動いていない(10px以内)なら「タップ」
+        if (duration < 250 && moveDist < 10) {
+            handleInteraction(endTouch.pageX);
+        } 
+        // 2. 拡大してない状態で、横に大きく動いたなら「ページめくり」
+        else if (scale === 1 && Math.abs(endTouch.pageX - startPoint.x) > 50) {
+            const diffX = endTouch.pageX - startPoint.x;
+            nextPrev(diffX > 0 ? -1 : 1);
         }
+        
         isDragging = false;
     });
 
@@ -237,3 +256,4 @@
 </script>
 </body>
 </html>
+
