@@ -61,110 +61,90 @@
 </div>
 
 <script>
-    let images = [];
-    let currentIndex = 0;
-    const state = { direction: 'rtl', viewMode: 'single' };
+// --- 自動非表示の制御 ---
+let idleTimer;
+const UI_ELEMENTS = ['controls-panel', 'close-btn'];
 
-    const zipInput = document.getElementById('zip-input');
-    const grid = document.getElementById('thumbnail-grid');
-    const overlay = document.getElementById('preview-overlay');
-    const imgL = document.getElementById('img-left');
-    const imgR = document.getElementById('img-right');
-    const seekbar = document.getElementById('seekbar');
-    const pageCount = document.getElementById('page-count');
+function showUI() {
+    UI_ELEMENTS.forEach(id => {
+        document.getElementById(id).classList.remove('hide');
+    });
+    resetIdleTimer();
+}
 
-    zipInput.onchange = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        grid.innerHTML = "読込中...";
-        const zip = await JSZip.loadAsync(file);
-        const fileList = [];
-        zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) fileList.push(entry); });
-        fileList.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
-        images = await Promise.all(fileList.map(async (f) => URL.createObjectURL(await f.async("blob"))));
-        renderThumbnails();
-        seekbar.max = images.length - 1;
-        document.getElementById('status').textContent = `${images.length}枚`;
-    };
+function hideUI() {
+    UI_ELEMENTS.forEach(id => {
+        document.getElementById(id).classList.add('hide');
+    });
+}
 
-    function renderThumbnails() {
-        grid.innerHTML = "";
-        images.forEach((src, index) => {
-            const div = document.createElement('div');
-            div.className = 'thumb-container';
-            div.innerHTML = `<img src="${src}"><div style="font-size:10px">${index + 1}</div>`;
-            div.onclick = () => { currentIndex = index; updatePreview(); overlay.style.display = 'flex'; };
-            grid.appendChild(div);
-        });
+function resetIdleTimer() {
+    clearTimeout(idleTimer);
+    if (overlay.style.display === 'flex') {
+        idleTimer = setTimeout(hideUI, 3000); // 3秒後に非表示
     }
+}
 
-    function updatePreview() {
-        const isDouble = state.viewMode === 'double';
-        const isRTL = state.direction === 'rtl';
-
-        // 表示のリセット
-        imgL.style.display = 'none';
-        imgR.style.display = 'none';
-
-        if (!isDouble) {
-            imgL.src = images[currentIndex];
-            imgL.className = 'viewer-img';
-            imgL.style.display = 'block';
-        } else {
-            // 見開き表示ロジック
-            let first = currentIndex;
-            let second = currentIndex + 1;
-            if (second >= images.length) second = null;
-
-            imgL.style.display = 'block';
-            imgR.style.display = second !== null ? 'block' : 'none';
-            imgL.className = 'viewer-img spread';
-            imgR.className = 'viewer-img spread';
-
-            if (isRTL) {
-                imgR.src = images[first];
-                if (second !== null) imgL.src = images[second];
-            } else {
-                imgL.src = images[first];
-                if (second !== null) imgR.src = images[second];
-            }
-        }
-        pageCount.textContent = `${currentIndex + 1} / ${images.length}`;
-        seekbar.value = currentIndex;
-    }
-
-    function nextPrev(step) {
-        const move = state.viewMode === 'double' ? step * 2 : step;
-        currentIndex += (state.direction === 'rtl' ? -move : move);
-        if (currentIndex < 0) currentIndex = 0;
-        if (currentIndex >= images.length) currentIndex = images.length - 1;
-        updatePreview();
-    }
-
-    // イベント
-    document.getElementById('direction-set').onchange = (e) => { state.direction = e.target.value; updatePreview(); };
-    document.getElementById('view-mode').onchange = (e) => { state.viewMode = e.target.value; updatePreview(); };
-    document.getElementById('close-btn').onclick = () => overlay.style.display = 'none';
-    seekbar.oninput = () => { currentIndex = parseInt(seekbar.value); updatePreview(); };
+// プレビュー画面でのクリック/タップ判定
+overlay.addEventListener('click', (e) => {
+    const x = e.clientX;
+    const width = window.innerWidth;
     
-    // タップ・クリック操作
-    document.getElementById('prev-area').onclick = () => nextPrev(-1);
-    document.getElementById('next-area').onclick = () => nextPrev(1);
+    // 画面の左右20%ずつを「ページめくりエリア」とする
+    if (x < width * 0.2 || x > width * 0.8) {
+        // ページをめくる時はUIを表示させない（タイマーもリセットしない）
+        // ※ nextPrev() 内で UI が表示されないように制御
+    } else {
+        // 画面の中央（20%〜80%の間）をタップした時だけUIを表示する
+        showUI();
+    }
+});
 
-    // スワイプ操作
-    let startX = 0;
-    overlay.ontouchstart = (e) => startX = e.touches[0].pageX;
-    overlay.ontouchend = (e) => {
-        let diff = startX - e.changedTouches[0].pageX;
-        if (Math.abs(diff) > 50) nextPrev(diff > 0 ? 1 : -1);
-    };
+// スワイプ操作（ここでもUIを表示させないようにする）
+overlay.ontouchend = (e) => {
+    let diff = startX - e.changedTouches[0].pageX;
+    if (Math.abs(diff) > 50) {
+        nextPrev(diff > 0 ? 1 : -1);
+        // ページをめくった後はUIを表示させず、もし出ていれば隠す方向に倒す
+        // (お好みで hideUI() を入れても良いですが、基本はそのままでOK)
+    }
+};
 
-    // キーボード
-    document.onkeydown = (e) => {
-        if (e.key === "ArrowLeft") nextPrev(-1);
-        if (e.key === "ArrowRight") nextPrev(1);
-        if (e.key === "Escape") document.getElementById('close-btn').click();
-    };
+// ページ更新処理（元の関数をシンプルに維持）
+function updatePreview() {
+    const isDouble = state.viewMode === 'double';
+    const isRTL = state.direction === 'rtl';
+
+    imgL.style.display = 'none';
+    imgR.style.display = 'none';
+
+    if (!isDouble) {
+        imgL.src = images[currentIndex];
+        imgL.className = 'viewer-img';
+        imgL.style.display = 'block';
+    } else {
+        let first = currentIndex;
+        let second = currentIndex + 1;
+        if (second >= images.length) second = null;
+
+        imgL.style.display = 'block';
+        imgR.style.display = second !== null ? 'block' : 'none';
+        imgL.className = 'viewer-img spread';
+        imgR.className = 'viewer-img spread';
+
+        if (isRTL) {
+            imgR.src = images[first];
+            if (second !== null) imgL.src = images[second];
+        } else {
+            imgL.src = images[first];
+            if (second !== null) imgR.src = images[second];
+        }
+    }
+    pageCount.textContent = `${currentIndex + 1} / ${images.length}`;
+    seekbar.value = currentIndex;
+    // ここにあった resetIdleTimer() を削除することで、めくるたびに出るのを防ぎます
+}
 </script>
 </body>
 </html>
+
