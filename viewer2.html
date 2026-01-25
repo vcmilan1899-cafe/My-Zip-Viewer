@@ -3,34 +3,30 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Zip電子書籍ビューワー Stable</title>
+    <title>Zip Viewer Ultra</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/pinch-zoom-js@2.3.5/dist/pinch-zoom.min.js"></script>
     <style>
         :root { --bg-color: #1a1a1a; --text-color: #eee; }
         body { background: var(--bg-color); color: var(--text-color); font-family: sans-serif; margin: 0; overflow: hidden; touch-action: none; }
         header { padding: 10px; background: #333; position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 10px; }
-        #thumbnail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; padding: 10px; height: calc(100vh - 60px); overflow-y: auto; touch-action: auto; }
-        .thumb-container { cursor: pointer; background: #000; display: flex; flex-direction: column; align-items: center; border-radius: 4px; overflow: hidden; }
-        .thumb-container img { width: 100%; height: 160px; object-fit: contain; }
-        
+        #thumbnail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; padding: 10px; height: calc(100vh - 60px); overflow-y: auto; touch-action: auto; }
+        .thumb-container { cursor: pointer; background: #000; border-radius: 4px; overflow: hidden; text-align: center; height: 150px; }
+        .thumb-container img { width: 100%; height: 130px; object-fit: contain; background: #222; }
         #preview-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 100; flex-direction: column; }
         #zoom-container { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; overflow: hidden; }
         #image-area { display: flex; justify-content: center; align-items: center; width: 100%; height: 100%; pointer-events: none; }
-        .viewer-img { max-height: 100%; max-width: 100%; object-fit: contain; display: none; }
-        .spread { max-width: 50% !important; }
-
-        #controls-panel, #close-btn { transition: opacity 0.3s; opacity: 1; visibility: visible; z-index: 200; }
+        .viewer-img { max-height: 100%; max-width: 100%; object-fit: contain; }
+        #controls-panel, #close-btn { transition: opacity 0.3s; z-index: 200; }
         .hide { opacity: 0 !important; visibility: hidden !important; }
-        #close-btn { position: absolute; top: 10px; left: 10px; background: rgba(255,68,68,0.8); color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 5px; }
-        #controls-panel { position: absolute; bottom: 0; left: 0; width: 100%; background: rgba(0,0,0,0.8); padding: 10px 0; display: flex; flex-direction: column; align-items: center; font-size: 12px; }
-        #seekbar { width: 85%; margin-bottom: 5px; }
-        select { background: #444; color: white; border: 1px solid #666; padding: 3px; border-radius: 3px; }
+        #close-btn { position: absolute; top: 10px; left: 10px; background: rgba(255,68,68,0.9); color: white; border: none; padding: 10px 15px; cursor: pointer; border-radius: 5px; }
+        #controls-panel { position: absolute; bottom: 0; left: 0; width: 100%; background: rgba(0,0,0,0.8); padding: 15px 0; display: flex; flex-direction: column; align-items: center; font-size: 12px; }
+        #seekbar { width: 80%; margin-bottom: 10px; }
     </style>
 </head>
 <body>
 
-<header id="main-header">
+<header>
     <input type="file" id="zip-input" accept=".zip">
     <span id="status">Zipを選択</span>
 </header>
@@ -45,11 +41,10 @@
             <img id="img-right" class="viewer-img">
         </div>
     </div>
-    
     <div id="controls-panel">
         <div style="margin-bottom:10px;">
-            <label>開き方: <select id="direction-set"><option value="rtl">右開き</option><option value="ltr">左開き</option></select></label>
-            <label style="margin-left:15px;">表示: <select id="view-mode"><option value="single">単ページ</option><option value="double">見開き</option></select></label>
+            <select id="direction-set"><option value="rtl">右開き</option><option value="ltr">左開き</option></select>
+            <select id="view-mode" style="margin-left:10px;"><option value="single">単ページ</option><option value="double">見開き</option></select>
         </div>
         <input type="range" id="seekbar" min="0" value="0" step="1">
         <div id="page-count"></div>
@@ -57,7 +52,8 @@
 </div>
 
 <script>
-    let images = [];
+    let zipEntries = []; // ZIP内のファイルエントリ
+    let blobCache = new Map(); // 生成したBlob URLの管理
     let currentIndex = 0;
     let idleTimer, pz, startX = 0;
     const state = { direction: 'rtl', viewMode: 'single' };
@@ -71,108 +67,122 @@
     zipInput.onchange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        document.getElementById('thumbnail-grid').innerHTML = "読込中...";
-        try {
-            const zip = await JSZip.loadAsync(file);
-            const fileList = [];
-            zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) fileList.push(entry); });
-            fileList.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
-            
-            // Androidのメモリ対策: Blob生成を少しずつ行う
-            images = [];
-            for(let f of fileList) {
-                const blob = await f.async("blob");
-                images.push(URL.createObjectURL(blob));
-            }
-            renderThumbnails();
-            seekbar.max = images.length - 1;
-            document.getElementById('status').textContent = `${images.length}枚`;
-        } catch (err) {
-            alert("Zipの読み込みに失敗しました。");
-        }
+        
+        document.getElementById('thumbnail-grid').innerHTML = "解析中...";
+        blobCache.forEach(url => URL.revokeObjectURL(url));
+        blobCache.clear();
+        
+        const zip = await JSZip.loadAsync(file);
+        zipEntries = [];
+        zip.forEach((path, entry) => {
+            if (/\.(jpe?g|png|gif|webp)$/i.test(path)) zipEntries.push(entry);
+        });
+        zipEntries.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+        
+        document.getElementById('status').textContent = `${zipEntries.length}枚`;
+        seekbar.max = zipEntries.length - 1;
+        renderThumbnails();
     };
 
-    function renderThumbnails() {
+    // サムネイルをスクロールに合わせて生成（メモリ節約）
+    async function renderThumbnails() {
         const grid = document.getElementById('thumbnail-grid');
         grid.innerHTML = "";
-        images.forEach((src, index) => {
+        zipEntries.forEach((entry, index) => {
             const div = document.createElement('div');
             div.className = 'thumb-container';
-            div.innerHTML = `<img src="${src}"><div style="font-size:10px">${index + 1}</div>`;
-            div.onclick = () => { 
-                currentIndex = index; 
-                overlay.style.display = 'flex';
-                updatePreview();
-                showUI();
-            };
+            div.innerHTML = `<div style="font-size:10px; margin-top:60px;">読み込み中...</div>`;
+            div.onclick = () => openPreview(index);
             grid.appendChild(div);
+
+            // 遅延読み込み
+            (async () => {
+                const blob = await entry.async("blob");
+                const url = URL.createObjectURL(blob);
+                div.innerHTML = `<img src="${url}"><div style="font-size:10px">${index + 1}</div>`;
+            })();
         });
     }
 
-    function initZoom() {
-        if (pz) pz.destroy();
-        // 画像が表示された後にPinchZoomを適用
-        setTimeout(() => {
-            pz = new PinchZoom(document.getElementById('zoom-container'), {
-                draggableUnzoomed: false,
-                minZoom: 1
-            });
-        }, 100);
+    async function getImageUrl(index) {
+        if (index < 0 || index >= zipEntries.length) return null;
+        if (blobCache.has(index)) return blobCache.get(index);
+        
+        const blob = await zipEntries[index].async("blob");
+        const url = URL.createObjectURL(blob);
+        blobCache.set(index, url);
+        
+        // キャッシュが増えすぎたら古いものを消す（Androidメモリ対策）
+        if (blobCache.size > 15) {
+            const firstKey = blobCache.keys().next().value;
+            URL.revokeObjectURL(blobCache.get(firstKey));
+            blobCache.delete(firstKey);
+        }
+        return url;
     }
 
-    function updatePreview() {
+    async function openPreview(index) {
+        currentIndex = index;
+        overlay.style.display = 'flex';
+        await updatePreview();
+        showUI();
+    }
+
+    async function updatePreview() {
         const isDouble = state.viewMode === 'double';
         const isRTL = state.direction === 'rtl';
         imgL.style.display = 'none'; imgR.style.display = 'none';
 
+        const url1 = await getImageUrl(currentIndex);
+        
         if (!isDouble) {
-            imgL.src = images[currentIndex];
-            imgL.className = 'viewer-img';
+            imgL.src = url1;
             imgL.style.display = 'block';
         } else {
-            let first = currentIndex, second = currentIndex + 1 >= images.length ? null : currentIndex + 1;
-            imgL.style.display = 'block'; 
-            imgR.style.display = second !== null ? 'block' : 'none';
-            imgL.className = 'viewer-img spread'; 
-            imgR.className = 'viewer-img spread';
+            const nextIdx = currentIndex + 1;
+            const url2 = await getImageUrl(nextIdx);
+            imgL.style.display = 'block';
+            imgR.style.display = url2 ? 'block' : 'none';
             if (isRTL) {
-                imgR.src = images[first];
-                if(second) imgL.src = images[second];
+                imgR.src = url1; if(url2) imgL.src = url2;
             } else {
-                imgL.src = images[first];
-                if(second) imgR.src = images[second];
+                imgL.src = url1; if(url2) imgR.src = url2;
             }
         }
-        document.getElementById('page-count').textContent = `${currentIndex + 1} / ${images.length}`;
+        document.getElementById('page-count').textContent = `${currentIndex + 1} / ${zipEntries.length}`;
         seekbar.value = currentIndex;
-        initZoom(); // 画像切り替えのたびに再初期化
+        
+        if (pz) pz.destroy();
+        setTimeout(() => {
+            pz = new PinchZoom(document.getElementById('zoom-container'), { draggableUnzoomed: false, minZoom: 1 });
+        }, 50);
     }
 
     function nextPrev(step) {
         if (pz && pz.zoomFactor > 1.05) return;
-        const move = state.viewMode === 'double' ? step * 2 : step;
-        currentIndex += (state.direction === 'rtl' ? -move : move);
+        const move = (state.viewMode === 'double') ? 2 : 1;
+        const actualStep = (state.direction === 'rtl') ? -step * move : step * move;
+        currentIndex += actualStep;
         if (currentIndex < 0) currentIndex = 0;
-        if (currentIndex >= images.length) currentIndex = images.length - 1;
+        if (currentIndex >= zipEntries.length) currentIndex = zipEntries.length - 1;
         updatePreview();
     }
 
-    function showUI() {
-        document.getElementById('controls-panel').classList.remove('hide');
-        document.getElementById('close-btn').classList.remove('hide');
-        resetIdleTimer();
+    // UI & イベント (前回と同様)
+    function showUI() { 
+        document.getElementById('controls-panel').classList.remove('hide'); 
+        document.getElementById('close-btn').classList.remove('hide'); 
+        resetIdleTimer(); 
     }
-    function hideUI() {
-        clearTimeout(idleTimer);
-        document.getElementById('controls-panel').classList.add('hide');
-        document.getElementById('close-btn').classList.add('hide');
+    function hideUI() { 
+        document.getElementById('controls-panel').classList.add('hide'); 
+        document.getElementById('close-btn').classList.add('hide'); 
     }
-    function resetIdleTimer() {
-        clearTimeout(idleTimer);
-        if (overlay.style.display === 'flex') idleTimer = setTimeout(hideUI, 3000);
+    function resetIdleTimer() { 
+        clearTimeout(idleTimer); 
+        if (overlay.style.display === 'flex') idleTimer = setTimeout(hideUI, 3000); 
     }
 
-    // Android/PC 両対応クリック
     overlay.addEventListener('mousedown', (e) => {
         if (e.target.closest('#controls-panel') || e.target.closest('#close-btn')) return;
         const x = e.clientX, width = window.innerWidth;
@@ -181,7 +191,6 @@
         else document.getElementById('controls-panel').classList.contains('hide') ? showUI() : hideUI();
     });
 
-    // Androidタッチ操作
     overlay.addEventListener('touchstart', (e) => { startX = e.touches[0].pageX; resetIdleTimer(); });
     overlay.addEventListener('touchend', (e) => {
         if (e.target.closest('#controls-panel') || e.target.closest('#close-btn')) return;
@@ -190,23 +199,11 @@
         if (Math.abs(diff) > 50) nextPrev(diff > 0 ? 1 : -1);
     });
 
-    // マウスホイール拡大
     overlay.addEventListener('wheel', (e) => {
-        if (!pz) return;
-        e.preventDefault();
-        const zoomSpeed = 0.1;
-        let newZoom = Math.max(1, Math.min(pz.zoomFactor + (e.deltaY < 0 ? zoomSpeed : -zoomSpeed), 5));
-        const rect = document.getElementById('zoom-container').getBoundingClientRect();
-        pz.scaleTo(newZoom, { x: e.clientX - rect.left, y: e.clientY - rect.top, animate: false });
+        if (!pz) return; e.preventDefault();
+        let newZoom = Math.max(1, Math.min(pz.zoomFactor + (e.deltaY < 0 ? 0.2 : -0.2), 5));
+        pz.scaleTo(newZoom, { x: e.clientX, y: e.clientY, animate: false });
     }, { passive: false });
-
-    document.addEventListener('keydown', (e) => {
-        if (overlay.style.display === 'flex') {
-            if (e.key === "ArrowLeft") nextPrev(-1);
-            if (e.key === "ArrowRight") nextPrev(1);
-            if (e.key === "Escape") document.getElementById('close-btn').click();
-        }
-    });
 
     document.getElementById('direction-set').onchange = (e) => { state.direction = e.target.value; updatePreview(); };
     document.getElementById('view-mode').onchange = (e) => { state.viewMode = e.target.value; updatePreview(); };
