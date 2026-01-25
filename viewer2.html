@@ -70,4 +70,181 @@
     const seekbar = document.getElementById('seekbar');
 
     // --- ZIP読み込み ---
-    document.getElementById('zip-input').on
+    document.getElementById('zip-input').onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        document.getElementById('thumbnail-grid').innerHTML = "解析中...";
+        blobCache.forEach(url => URL.revokeObjectURL(url));
+        blobCache.clear();
+        
+        const zip = await JSZip.loadAsync(file);
+        zipEntries = [];
+        zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) zipEntries.push(entry); });
+        zipEntries.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+        
+        document.getElementById('status').textContent = `${zipEntries.length}枚`;
+        seekbar.max = zipEntries.length - 1;
+        renderThumbnails();
+    };
+
+    function renderThumbnails() {
+        const grid = document.getElementById('thumbnail-grid');
+        grid.innerHTML = "";
+        zipEntries.forEach((entry, index) => {
+            const div = document.createElement('div');
+            div.className = 'thumb-container';
+            div.innerHTML = `<div style="margin-top:60px; font-size:10px;">...</div>`;
+            div.onclick = () => { currentIndex = index; overlay.style.display = 'flex'; updatePreview(); showUI(); };
+            grid.appendChild(div);
+            (async () => {
+                const blob = await entry.async("blob");
+                div.innerHTML = `<img src="${URL.createObjectURL(blob)}"><div style="font-size:10px">${index + 1}</div>`;
+            })();
+        });
+    }
+
+    async function getImageUrl(index) {
+        if (index < 0 || index >= zipEntries.length) return null;
+        if (blobCache.has(index)) return blobCache.get(index);
+        const blob = await zipEntries[index].async("blob");
+        const url = URL.createObjectURL(blob);
+        blobCache.set(index, url);
+        if (blobCache.size > 15) { const key = blobCache.keys().next().value; URL.revokeObjectURL(blobCache.get(key)); blobCache.delete(key); }
+        return url;
+    }
+
+    async function updatePreview() {
+        resetZoom();
+        const url1 = await getImageUrl(currentIndex);
+        const imgL = document.getElementById('img-left'), imgR = document.getElementById('img-right');
+        imgL.style.display = 'none'; imgR.style.display = 'none';
+
+        if (state.viewMode === 'single') {
+            imgL.src = url1; imgL.style.display = 'block';
+        } else {
+            const url2 = await getImageUrl(currentIndex + 1);
+            imgL.style.display = 'block'; imgR.style.display = url2 ? 'block' : 'none';
+            if (state.direction === 'rtl') { imgR.src = url1; if(url2) imgL.src = url2; }
+            else { imgL.src = url1; if(url2) imgR.src = url2; }
+        }
+        document.getElementById('page-count').textContent = `${currentIndex + 1} / ${zipEntries.length}`;
+        seekbar.value = currentIndex;
+    }
+
+    function resetZoom() { scale = 1; posX = 0; posY = 0; applyTransform(); }
+    function applyTransform() { imageArea.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`; }
+
+    // --- インタラクション判定 ---
+    function isUITarget(e) { return e.target.closest('#controls-panel') || e.target.closest('#close-btn'); }
+
+    function onStart(e) {
+        if (isUITarget(e)) return;
+        const touch = e.touches ? e.touches[0] : e;
+        touchStartTime = Date.now();
+        startPoint = { x: touch.pageX, y: touch.pageY };
+        
+        if (e.touches && e.touches.length === 2) {
+            isDoublePinch = true;
+            initialPinchDistance = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+        } else {
+            isDoublePinch = false;
+            isDragging = true;
+            startX = touch.pageX - posX;
+            startY = touch.pageY - posY;
+        }
+        resetIdleTimer();
+    }
+
+    function onMove(e) {
+        if (!isDragging && !isDoublePinch) return;
+        if (isUITarget(e)) return;
+
+        if (e.touches && e.touches.length === 2) {
+            e.preventDefault();
+            const dist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+            scale = Math.min(Math.max(1, scale * (dist / initialPinchDistance)), 5);
+            initialPinchDistance = dist;
+            applyTransform();
+        } else if (isDragging && scale > 1) {
+            e.preventDefault();
+            const touch = e.touches ? e.touches[0] : e;
+            posX = touch.pageX - startX;
+            posY = touch.pageY - startY;
+            applyTransform();
+        }
+    }
+
+    function onEnd(e) {
+        if (isUITarget(e)) { isDragging = false; return; }
+        
+        const duration = Date.now() - touchStartTime;
+        const endTouch = e.changedTouches ? e.changedTouches[0] : e;
+        const moveDistX = endTouch.pageX - startPoint.x;
+        const moveDistY = endTouch.pageY - startPoint.y;
+        const totalDist = Math.hypot(moveDistX, moveDistY);
+
+        if (totalDist < 15 && duration < 300) {
+            e.preventDefault(); 
+            handleInteraction(endTouch.pageX);
+        } else if (scale === 1 && Math.abs(moveDistX) > 50 && !isDoublePinch) {
+            nextPrev(moveDistX > 0 ? -1 : 1);
+        }
+        isDragging = false;
+        isDoublePinch = false;
+    }
+
+    function handleInteraction(x) {
+        const width = window.innerWidth;
+        if (x < width * 0.25) nextPrev(-1);
+        else if (x > width * 0.75) nextPrev(1);
+        else toggleUI();
+    }
+
+    function toggleUI() {
+        const panel = document.getElementById('controls-panel');
+        panel.classList.contains('hide') ? showUI() : hideUI();
+    }
+
+    function nextPrev(n) {
+        if (scale > 1) return;
+        const step = (state.viewMode === 'double' ? 2 : 1) * n;
+        currentIndex += (state.direction === 'rtl' ? -step : step);
+        currentIndex = Math.max(0, Math.min(currentIndex, zipEntries.length - 1));
+        updatePreview();
+    }
+
+    // --- UI制御 ---
+    function showUI() { document.getElementById('controls-panel').classList.remove('hide'); document.getElementById('close-btn').classList.remove('hide'); resetIdleTimer(); }
+    function hideUI() { clearTimeout(idleTimer); document.getElementById('controls-panel').classList.add('hide'); document.getElementById('close-btn').classList.add('hide'); }
+    function resetIdleTimer() { clearTimeout(idleTimer); if (overlay.style.display === 'flex') idleTimer = setTimeout(hideUI, 4000); }
+
+    // --- イベントリスナー ---
+    overlay.addEventListener('touchstart', onStart, { passive: false });
+    overlay.addEventListener('touchmove', onMove, { passive: false });
+    overlay.addEventListener('touchend', onEnd, { passive: false });
+    overlay.addEventListener('mousedown', onStart);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onEnd);
+    overlay.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        scale = Math.min(Math.max(1, scale * delta), 5);
+        if (scale === 1) { posX = 0; posY = 0; }
+        applyTransform();
+    }, { passive: false });
+
+    document.getElementById('direction-set').onchange = (e) => { state.direction = e.target.value; updatePreview(); };
+    document.getElementById('view-mode').onchange = (e) => { state.viewMode = e.target.value; updatePreview(); };
+    document.getElementById('close-btn').onclick = (e) => { e.stopPropagation(); overlay.style.display = 'none'; resetZoom(); };
+    seekbar.oninput = () => { currentIndex = parseInt(seekbar.value); updatePreview(); resetIdleTimer(); };
+    
+    document.addEventListener('keydown', (e) => {
+        if (overlay.style.display === 'flex') {
+            if (e.key === "ArrowLeft") nextPrev(-1);
+            if (e.key === "ArrowRight") nextPrev(1);
+            if (e.key === "Escape") document.getElementById('close-btn').click();
+        }
+    });
+</script>
+</body>
+</html>
