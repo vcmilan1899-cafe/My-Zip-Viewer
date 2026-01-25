@@ -142,25 +142,53 @@
     }
 
     // --- UI制御 ---
+    function toggleUI() {
+        const isHidden = document.getElementById('controls-panel').classList.contains('hide');
+        if (isHidden) {
+            showUI();
+        } else {
+            hideUI();
+        }
+    }
+
     function showUI() {
         UI_ELEMENTS.forEach(id => document.getElementById(id).classList.remove('hide'));
         resetIdleTimer();
     }
+
     function hideUI() {
+        clearTimeout(idleTimer); // 手動で隠す時はタイマーも止める
         UI_ELEMENTS.forEach(id => document.getElementById(id).classList.add('hide'));
     }
+
     function resetIdleTimer() {
         clearTimeout(idleTimer);
-        if (overlay.style.display === 'flex') idleTimer = setTimeout(hideUI, 3000);
+        // プレビュー画面が表示されている時のみ、3秒後に隠す
+        if (overlay.style.display === 'flex') {
+            idleTimer = setTimeout(hideUI, 3000);
+        }
     }
 
-    // クリック判定
+    // クリック（タップ）判定の修正
     overlay.addEventListener('click', (e) => {
+        // UI（シークバー等）自体をクリックした時は何もしない
+        if (e.target.closest('#controls-panel') || e.target.closest('#close-btn')) {
+            return;
+        }
+
         const x = e.clientX;
         const width = window.innerWidth;
-        if (x < width * 0.2) nextPrev(-1);
-        else if (x > width * 0.8) nextPrev(1);
-        else showUI();
+        
+        if (x < width * 0.2) {
+            // 左端20%：前へ
+            nextPrev(-1);
+        } else if (x > width * 0.8) {
+            // 右端20%：次へ
+            nextPrev(1);
+        } else {
+            // 中央60%：表示・非表示を切り替える
+            toggleUI();
+        }
     });
 
     // スワイプ
@@ -185,3 +213,4 @@
 </script>
 </body>
 </html>
+
