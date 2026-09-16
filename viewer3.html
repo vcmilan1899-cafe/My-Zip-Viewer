@@ -2,8 +2,15 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#1a1a1a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Zip Viewer">
     <title>Universal Web Reader Pro</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         :root { --bg-color: #1a1a1a; --text-color: #eee; --accent-color: #4488ff; }
@@ -72,11 +79,15 @@
 
 <script>
     let zipEntries = [], blobCache = new Map(), currentIndex = 0, idleTimer, currentFileUrl = "";
-    const state = { 
-        direction: localStorage.getItem('viewer-direction') || 'rtl', 
-        viewMode: localStorage.getItem('viewer-viewmode') || 'single' 
+    const state = {
+        direction: localStorage.getItem('viewer-direction') || 'rtl',
+        viewMode: (window.innerWidth > window.innerHeight) ? 'double' : 'single'
     };
-    
+    let viewModeManualOverride = false;
+    let lastIsLandscape = window.innerWidth > window.innerHeight;
+    let wakeLock = null;
+    let orientTimer;
+
     let scale = 1, posX = 0, posY = 0, startX = 0, startY = 0, isDragging = false;
     let initialPinchDistance = 0, touchStartTime = 0, startPoint = { x: 0, y: 0 }, isDoublePinch = false;
 
@@ -92,20 +103,75 @@
     const controlsPanel = document.getElementById('controls-panel');
 
     window.onload = () => {
-        applySettingStyles();
+        applyOrientationViewMode();
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('./sw.js').catch(() => {});
+        }
         const params = new URLSearchParams(window.location.search);
         currentFileUrl = params.get('file');
         if (currentFileUrl) loadFromUrl(currentFileUrl);
     };
+
+    function isLandscape() {
+        return window.innerWidth > window.innerHeight;
+    }
+
+    function isViewerOpen() {
+        return overlay.style.display === 'flex';
+    }
+
+    function applyOrientationViewMode() {
+        const landscape = isLandscape();
+        if (lastIsLandscape !== landscape) {
+            viewModeManualOverride = false;
+            lastIsLandscape = landscape;
+        }
+        if (viewModeManualOverride) {
+            applySettingStyles();
+            return;
+        }
+        const nextMode = landscape ? 'double' : 'single';
+        const changed = state.viewMode !== nextMode;
+        state.viewMode = nextMode;
+        applySettingStyles();
+        if (changed && isViewerOpen() && zipEntries.length) updatePreview();
+    }
+
+    function onViewportChange() {
+        clearTimeout(orientTimer);
+        orientTimer = setTimeout(applyOrientationViewMode, 80);
+    }
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('orientationchange', onViewportChange);
 
     function applySettingStyles() {
         btnDirection.textContent = (state.direction === 'rtl') ? '右開き' : '左開き';
         btnDirection.classList.toggle('active', state.direction === 'ltr');
         btnViewMode.textContent = (state.viewMode === 'single') ? '単ページ' : '見開き';
         btnViewMode.classList.toggle('active', state.viewMode === 'double');
-        // シークバーの見た目だけ反転させる
         seekbarContainer.className = (state.direction === 'rtl') ? 'rtl-bar' : 'ltr-bar';
     }
+
+    async function requestWakeLock() {
+        if (!('wakeLock' in navigator) || !isViewerOpen()) return;
+        try {
+            wakeLock = await navigator.wakeLock.request('screen');
+            wakeLock.addEventListener('release', () => { wakeLock = null; });
+        } catch (err) {
+            wakeLock = null;
+        }
+    }
+
+    async function releaseWakeLock() {
+        if (!wakeLock) return;
+        try { await wakeLock.release(); } catch (err) {}
+        wakeLock = null;
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && isViewerOpen()) requestWakeLock();
+        else releaseWakeLock();
+    });
 
     document.getElementById('file-input').onchange = (e) => {
         const file = e.target.files[0];
@@ -132,7 +198,7 @@
             const zip = await JSZip.loadAsync(blob);
             zipEntries = [];
             zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) zipEntries.push(entry); });
-            zipEntries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+            zipEntries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
             if (zipEntries.length === 0) throw new Error("画像なし");
             initScreen.style.display = 'none';
             thumbGrid.style.display = 'grid';
@@ -161,7 +227,13 @@
         });
     }
 
-    function openViewer() { overlay.style.display = 'flex'; overlay.focus(); updatePreview(); showUI(); }
+    function openViewer() {
+        overlay.style.display = 'flex';
+        overlay.focus();
+        updatePreview();
+        showUI();
+        requestWakeLock();
+    }
 
     async function getImageUrl(index) {
         if (index < 0 || index >= zipEntries.length) return null;
@@ -182,12 +254,10 @@
         } else {
             const url2 = await getImageUrl(currentIndex + 1);
             imgL.style.display = 'block'; imgR.style.display = url2 ? 'block' : 'none';
-            if (state.direction === 'rtl') { 
-                // 右開き：1ページ目(url1)を右に、2ページ目(url2)を左に
-                imgR.src = url1; if(url2) imgL.src = url2; 
-            } else { 
-                // 左開き：1ページ目(url1)を左に、2ページ目(url2)を右に
-                imgL.src = url1; if(url2) imgR.src = url2; 
+            if (state.direction === 'rtl') {
+                imgR.src = url1; if(url2) imgL.src = url2;
+            } else {
+                imgL.src = url1; if(url2) imgR.src = url2;
             }
         }
         document.getElementById('page-count').textContent = `${currentIndex + 1} / ${zipEntries.length}`;
@@ -202,19 +272,13 @@
         }
         const w = window.innerWidth, h = window.innerHeight;
         if (x > w * 0.3 && x < w * 0.7 && y > h * 0.3 && y < h * 0.7) { showUI(); return; }
-        
-        // 【重要】開き方向に関わらず 下＝増加(1)、上＝減少(-1)
         nextPrev(y > h * 0.5 ? 1 : -1);
     }
 
     function nextPrev(n) {
         if (scale > 1) return;
         const step = (state.viewMode === 'double' ? 2 : 1);
-        
-        // 【重要】設定に関わらず インデックスを n * step 増減させる
-        // n=1なら増加（進む）、n=-1なら減少（戻る）
         currentIndex += (n * step);
-        
         currentIndex = Math.max(0, Math.min(currentIndex, zipEntries.length - 1));
         updatePreview();
     }
@@ -229,7 +293,7 @@
     btnViewMode.onclick = (e) => {
         e.stopPropagation();
         state.viewMode = (state.viewMode === 'single') ? 'double' : 'single';
-        localStorage.setItem('viewer-viewmode', state.viewMode);
+        viewModeManualOverride = true;
         applySettingStyles(); updatePreview(); resetIdleTimer();
     };
 
@@ -268,7 +332,6 @@
         const d = Date.now() - touchStartTime; const t = e.changedTouches[0];
         const mx = t.pageX - startPoint.x; const my = t.pageY - startPoint.y;
         if (Math.hypot(mx, my) < 15 && d < 300) { e.preventDefault(); handleInteraction(t.pageX, t.pageY); }
-        // フリックは見た目に合わせる(右開きなら右フリックでインデックス減少)
         else if (scale === 1 && Math.abs(mx) > 50 && !isDoublePinch) {
             const flickDir = mx > 0 ? -1 : 1;
             nextPrev(state.direction === 'rtl' ? -flickDir : flickDir);
@@ -285,7 +348,7 @@
         if (!isDragging || isUITargetElement(e.target)) return;
         const d = Date.now() - touchStartTime; const mx = e.pageX - startPoint.x; const my = e.pageY - startPoint.y;
         if (Math.hypot(mx, my) < 10 && d < 300) { handleInteraction(e.pageX, e.pageY); }
-        else if (scale === 1 && Math.abs(mx) > 50) { 
+        else if (scale === 1 && Math.abs(mx) > 50) {
             const flickDir = mx > 0 ? -1 : 1;
             nextPrev(state.direction === 'rtl' ? -flickDir : flickDir);
         }
@@ -299,7 +362,7 @@
             if (e.key === "Escape") document.getElementById('close-btn').click();
         }
     });
-    
+
     document.getElementById('fullscreen-btn').onclick = () => {
         const el = overlay;
         if (el.requestFullscreen) { if (!document.fullscreenElement) el.requestFullscreen(); else document.exitFullscreen(); }
@@ -309,7 +372,7 @@
         e.stopPropagation(); if(document.fullscreenElement || document.webkitFullscreenElement) {
             if(document.exitFullscreen) document.exitFullscreen(); else if(document.webkitExitFullscreen) document.webkitExitFullscreen();
         }
-        overlay.style.display = 'none'; resetZoom();
+        overlay.style.display = 'none'; resetZoom(); releaseWakeLock();
     };
     seekbar.oninput = () => { currentIndex = parseInt(seekbar.value); updatePreview(); resetIdleTimer(); };
 </script>
