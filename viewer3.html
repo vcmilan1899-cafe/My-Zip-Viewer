@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Universal Web Reader Pro</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        :root { --bg-color: #1a1a1a; --text-color: #eee; --accent-color: #4488ff; }
+        body { background: var(--bg-color); color: var(--text-color); font-family: sans-serif; margin: 0; overflow: hidden; touch-action: none; }
+        header { height: 50px; padding: 0 15px; background: #333; display: flex; align-items: center; justify-content: space-between; z-index: 10; box-sizing: border-box; }
+        #status { font-size: 14px; color: #ffeb3b; }
+        #init-screen { height: calc(100svh - 50px); display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 20px; text-align: center; padding: 20px; }
+        .btn-primary { background: var(--accent-color); color: white; padding: 15px 30px; border-radius: 8px; cursor: pointer; font-weight: bold; border: none; }
+        input[type="file"] { display: none; }
+        #thumbnail-grid { display: none; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; padding: 10px; height: calc(100svh - 50px); overflow-y: auto; touch-action: auto; }
+        .thumb-container { cursor: pointer; background: #000; border-radius: 4px; overflow: hidden; text-align: center; height: 150px; }
+        .thumb-container img { width: 100%; height: 120px; object-fit: contain; background: #222; }
+        #preview-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100svh; background: #000; z-index: 100; flex-direction: column; overflow: hidden; outline: none; }
+        #zoom-container { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; cursor: grab; position: relative; }
+        #image-area { display: flex; justify-content: center; align-items: center; transition: transform 0.05s linear; transform-origin: center; will-change: transform; }
+        .viewer-img { max-height: 100svh; max-width: 100vw; object-fit: contain; pointer-events: none; }
+        #controls-panel, #close-btn, #fullscreen-btn { transition: opacity 0.3s, visibility 0.3s; z-index: 200; pointer-events: auto; }
+        .hide { opacity: 0 !important; visibility: hidden !important; }
+        #close-btn { position: absolute; top: env(safe-area-inset-top, 15px); left: 15px; background: rgba(255,68,68,0.9); color: white; border: none; padding: 12px 20px; cursor: pointer; border-radius: 8px; font-weight: bold; }
+        #fullscreen-btn { position: absolute; top: env(safe-area-inset-top, 15px); right: 15px; background: rgba(68,153,255,0.9); color: white; border: none; padding: 12px 20px; cursor: pointer; border-radius: 8px; font-weight: bold; }
+        #controls-panel { position: absolute; bottom: 0; left: 0; width: 100%; background: rgba(0,0,0,0.85); padding: 20px 0; padding-bottom: calc(20px + env(safe-area-inset-bottom, 5px)); display: flex; flex-direction: column; align-items: center; font-size: 14px; }
+        .setting-row { display: flex; gap: 10px; margin-bottom: 12px; }
+        .toggle-btn { background: #444; color: #fff; border: 1px solid #666; padding: 10px 20px; border-radius: 25px; font-size: 13px; cursor: pointer; transition: all 0.2s; min-width: 100px; text-align: center; user-select: none; }
+        .toggle-btn.active { background: var(--accent-color); border-color: #77aaff; font-weight: bold; }
+        #seekbar-container { width: 85%; display: flex; justify-content: center; }
+        #seekbar { width: 100%; height: 40px; cursor: pointer; }
+        .rtl-bar { direction: rtl; }
+        .ltr-bar { direction: ltr; }
+        #page-count { margin-top: 5px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div id="status">待機中</div>
+    <div id="file-name" style="font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px;"></div>
+</header>
+
+<div id="init-screen">
+    <div id="init-msg">NASから開くか、ファイルを選択してください</div>
+    <label class="btn-primary">ファイルを選択<input type="file" id="file-input" accept=".zip"></label>
+</div>
+
+<div id="thumbnail-grid"></div>
+
+<div id="preview-overlay" tabindex="0">
+    <button id="close-btn">一覧</button>
+    <button id="fullscreen-btn">全画面</button>
+    <div id="zoom-container">
+        <div id="image-area">
+            <img id="img-left" class="viewer-img">
+            <img id="img-right" class="viewer-img">
+        </div>
+    </div>
+    <div id="controls-panel">
+        <div class="setting-row">
+            <div id="btn-direction" class="toggle-btn">右開き</div>
+            <div id="btn-viewmode" class="toggle-btn">単ページ</div>
+        </div>
+        <div id="seekbar-container">
+            <input type="range" id="seekbar" min="0" value="0" step="1">
+        </div>
+        <div id="page-count">0 / 0</div>
+    </div>
+</div>
+
+<script>
+    let zipEntries = [], blobCache = new Map(), currentIndex = 0, idleTimer, currentFileUrl = "";
+    const state = { 
+        direction: localStorage.getItem('viewer-direction') || 'rtl', 
+        viewMode: localStorage.getItem('viewer-viewmode') || 'single' 
+    };
+    
+    let scale = 1, posX = 0, posY = 0, startX = 0, startY = 0, isDragging = false;
+    let initialPinchDistance = 0, touchStartTime = 0, startPoint = { x: 0, y: 0 }, isDoublePinch = false;
+
+    const overlay = document.getElementById('preview-overlay');
+    const imageArea = document.getElementById('image-area');
+    const seekbar = document.getElementById('seekbar');
+    const seekbarContainer = document.getElementById('seekbar-container');
+    const statusTxt = document.getElementById('status');
+    const initScreen = document.getElementById('init-screen');
+    const thumbGrid = document.getElementById('thumbnail-grid');
+    const btnDirection = document.getElementById('btn-direction');
+    const btnViewMode = document.getElementById('btn-viewmode');
+    const controlsPanel = document.getElementById('controls-panel');
+
+    window.onload = () => {
+        applySettingStyles();
+        const params = new URLSearchParams(window.location.search);
+        currentFileUrl = params.get('file');
+        if (currentFileUrl) loadFromUrl(currentFileUrl);
+    };
+
+    function applySettingStyles() {
+        btnDirection.textContent = (state.direction === 'rtl') ? '右開き' : '左開き';
+        btnDirection.classList.toggle('active', state.direction === 'ltr');
+        btnViewMode.textContent = (state.viewMode === 'single') ? '単ページ' : '見開き';
+        btnViewMode.classList.toggle('active', state.viewMode === 'double');
+        // シークバーの見た目だけ反転させる
+        seekbarContainer.className = (state.direction === 'rtl') ? 'rtl-bar' : 'ltr-bar';
+    }
+
+    document.getElementById('file-input').onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        currentFileUrl = "local:" + file.name;
+        processZip(file);
+    };
+
+    async function loadFromUrl(url) {
+        statusTxt.textContent = "ダウンロード中...";
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error("取得失敗");
+            const blob = await response.blob();
+            processZip(blob);
+        } catch (err) {
+            statusTxt.textContent = "取得失敗";
+            initScreen.style.display = 'flex';
+        }
+    }
+
+    async function processZip(blob) {
+        try {
+            const zip = await JSZip.loadAsync(blob);
+            zipEntries = [];
+            zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) zipEntries.push(entry); });
+            zipEntries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+            if (zipEntries.length === 0) throw new Error("画像なし");
+            initScreen.style.display = 'none';
+            thumbGrid.style.display = 'grid';
+            statusTxt.textContent = `${zipEntries.length}枚`;
+            seekbar.max = zipEntries.length - 1;
+            blobCache.clear();
+            renderThumbnails();
+            const savedPage = localStorage.getItem('last-page-' + currentFileUrl);
+            if (savedPage !== null && zipEntries[savedPage]) {
+                if (confirm("続きから読みますか？")) { currentIndex = parseInt(savedPage); openViewer(); }
+            }
+        } catch (err) { alert(err.message); }
+    }
+
+    function renderThumbnails() {
+        thumbGrid.innerHTML = "";
+        zipEntries.forEach((entry, index) => {
+            const div = document.createElement('div');
+            div.className = 'thumb-container';
+            div.onclick = () => { currentIndex = index; openViewer(); };
+            thumbGrid.appendChild(div);
+            (async () => {
+                const b = await entry.async("blob");
+                div.innerHTML = `<img src="${URL.createObjectURL(b)}"><div style="font-size:10px">${index + 1}</div>`;
+            })();
+        });
+    }
+
+    function openViewer() { overlay.style.display = 'flex'; overlay.focus(); updatePreview(); showUI(); }
+
+    async function getImageUrl(index) {
+        if (index < 0 || index >= zipEntries.length) return null;
+        if (blobCache.has(index)) return blobCache.get(index);
+        const blob = await zipEntries[index].async("blob");
+        const url = URL.createObjectURL(blob);
+        blobCache.set(index, url);
+        return url;
+    }
+
+    async function updatePreview() {
+        resetZoom();
+        const url1 = await getImageUrl(currentIndex);
+        const imgL = document.getElementById('img-left'), imgR = document.getElementById('img-right');
+        imgL.style.display = 'none'; imgR.style.display = 'none';
+        if (state.viewMode === 'single') {
+            imgL.src = url1; imgL.style.display = 'block';
+        } else {
+            const url2 = await getImageUrl(currentIndex + 1);
+            imgL.style.display = 'block'; imgR.style.display = url2 ? 'block' : 'none';
+            if (state.direction === 'rtl') { 
+                // 右開き：1ページ目(url1)を右に、2ページ目(url2)を左に
+                imgR.src = url1; if(url2) imgL.src = url2; 
+            } else { 
+                // 左開き：1ページ目(url1)を左に、2ページ目(url2)を右に
+                imgL.src = url1; if(url2) imgR.src = url2; 
+            }
+        }
+        document.getElementById('page-count').textContent = `${currentIndex + 1} / ${zipEntries.length}`;
+        seekbar.value = currentIndex;
+        localStorage.setItem('last-page-' + currentFileUrl, currentIndex);
+    }
+
+    function handleInteraction(x, y) {
+        if (!controlsPanel.classList.contains('hide')) {
+            if (!isUITargetElement(document.elementFromPoint(x, y))) { hideUI(); }
+            return;
+        }
+        const w = window.innerWidth, h = window.innerHeight;
+        if (x > w * 0.3 && x < w * 0.7 && y > h * 0.3 && y < h * 0.7) { showUI(); return; }
+        
+        // 【重要】開き方向に関わらず 下＝増加(1)、上＝減少(-1)
+        nextPrev(y > h * 0.5 ? 1 : -1);
+    }
+
+    function nextPrev(n) {
+        if (scale > 1) return;
+        const step = (state.viewMode === 'double' ? 2 : 1);
+        
+        // 【重要】設定に関わらず インデックスを n * step 増減させる
+        // n=1なら増加（進む）、n=-1なら減少（戻る）
+        currentIndex += (n * step);
+        
+        currentIndex = Math.max(0, Math.min(currentIndex, zipEntries.length - 1));
+        updatePreview();
+    }
+
+    btnDirection.onclick = (e) => {
+        e.stopPropagation();
+        state.direction = (state.direction === 'rtl') ? 'ltr' : 'rtl';
+        localStorage.setItem('viewer-direction', state.direction);
+        applySettingStyles(); updatePreview(); resetIdleTimer();
+    };
+
+    btnViewMode.onclick = (e) => {
+        e.stopPropagation();
+        state.viewMode = (state.viewMode === 'single') ? 'double' : 'single';
+        localStorage.setItem('viewer-viewmode', state.viewMode);
+        applySettingStyles(); updatePreview(); resetIdleTimer();
+    };
+
+    function resetZoom() { scale = 1; posX = 0; posY = 0; applyTransform(); }
+    function applyTransform() { imageArea.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`; }
+    function isUITargetElement(el) { return el && (el.closest('#controls-panel') || el.closest('#close-btn') || el.closest('#fullscreen-btn')); }
+    function showUI() { document.querySelectorAll('#controls-panel, #close-btn, #fullscreen-btn').forEach(el => el.classList.remove('hide')); resetIdleTimer(); }
+    function hideUI() { clearTimeout(idleTimer); document.querySelectorAll('#controls-panel, #close-btn, #fullscreen-btn').forEach(el => el.classList.add('hide')); }
+    function resetIdleTimer() { clearTimeout(idleTimer); if (overlay.style.display === 'flex') idleTimer = setTimeout(hideUI, 5000); }
+
+    overlay.addEventListener('touchstart', (e) => {
+        if (isUITargetElement(e.target)) return;
+        const t = e.touches[0]; touchStartTime = Date.now(); startPoint = { x: t.pageX, y: t.pageY };
+        if (e.touches.length === 2) {
+            isDoublePinch = true;
+            initialPinchDistance = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+        } else {
+            isDoublePinch = false; isDragging = true; startX = t.pageX - posX; startY = t.pageY - posY;
+        }
+        resetIdleTimer();
+    }, { passive: false });
+
+    overlay.addEventListener('touchmove', (e) => {
+        if (isUITargetElement(e.target)) return;
+        if (e.touches.length === 2) {
+            e.preventDefault();
+            const d = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+            scale = Math.min(Math.max(1, scale * (d / initialPinchDistance)), 5); initialPinchDistance = d; applyTransform();
+        } else if (isDragging && scale > 1) {
+            e.preventDefault(); const t = e.touches[0]; posX = t.pageX - startX; posY = t.pageY - startY; applyTransform();
+        }
+    }, { passive: false });
+
+    overlay.addEventListener('touchend', (e) => {
+        if (isUITargetElement(e.target)) { isDragging = false; return; }
+        const d = Date.now() - touchStartTime; const t = e.changedTouches[0];
+        const mx = t.pageX - startPoint.x; const my = t.pageY - startPoint.y;
+        if (Math.hypot(mx, my) < 15 && d < 300) { e.preventDefault(); handleInteraction(t.pageX, t.pageY); }
+        // フリックは見た目に合わせる(右開きなら右フリックでインデックス減少)
+        else if (scale === 1 && Math.abs(mx) > 50 && !isDoublePinch) {
+            const flickDir = mx > 0 ? -1 : 1;
+            nextPrev(state.direction === 'rtl' ? -flickDir : flickDir);
+        }
+        isDragging = false; isDoublePinch = false;
+    });
+
+    overlay.addEventListener('mousedown', (e) => {
+        if (isUITargetElement(e.target)) return;
+        isDragging = true; startX = e.pageX - posX; startY = e.pageY - posY; touchStartTime = Date.now(); startPoint = { x: e.pageX, y: e.pageY };
+    });
+
+    window.addEventListener('mouseup', (e) => {
+        if (!isDragging || isUITargetElement(e.target)) return;
+        const d = Date.now() - touchStartTime; const mx = e.pageX - startPoint.x; const my = e.pageY - startPoint.y;
+        if (Math.hypot(mx, my) < 10 && d < 300) { handleInteraction(e.pageX, e.pageY); }
+        else if (scale === 1 && Math.abs(mx) > 50) { 
+            const flickDir = mx > 0 ? -1 : 1;
+            nextPrev(state.direction === 'rtl' ? -flickDir : flickDir);
+        }
+        isDragging = false;
+    });
+
+    window.addEventListener('keydown', (e) => {
+        if (overlay.style.display === 'flex') {
+            if (e.key === "ArrowLeft") { e.preventDefault(); nextPrev(state.direction === 'rtl' ? 1 : -1); }
+            if (e.key === "ArrowRight") { e.preventDefault(); nextPrev(state.direction === 'rtl' ? -1 : 1); }
+            if (e.key === "Escape") document.getElementById('close-btn').click();
+        }
+    });
+    
+    document.getElementById('fullscreen-btn').onclick = () => {
+        const el = overlay;
+        if (el.requestFullscreen) { if (!document.fullscreenElement) el.requestFullscreen(); else document.exitFullscreen(); }
+        else if (el.webkitRequestFullscreen) { if (!document.webkitFullscreenElement) el.webkitRequestFullscreen(); else document.webkitExitFullscreen(); }
+    };
+    document.getElementById('close-btn').onclick = (e) => {
+        e.stopPropagation(); if(document.fullscreenElement || document.webkitFullscreenElement) {
+            if(document.exitFullscreen) document.exitFullscreen(); else if(document.webkitExitFullscreen) document.webkitExitFullscreen();
+        }
+        overlay.style.display = 'none'; resetZoom();
+    };
+    seekbar.oninput = () => { currentIndex = parseInt(seekbar.value); updatePreview(); resetIdleTimer(); };
+</script>
+</body>
+</html>
