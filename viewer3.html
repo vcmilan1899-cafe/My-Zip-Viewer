@@ -21,8 +21,11 @@
         .btn-primary { background: var(--accent-color); color: white; padding: 15px 30px; border-radius: 8px; cursor: pointer; font-weight: bold; border: none; }
         input[type="file"] { display: none; }
         #thumbnail-grid { display: none; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; padding: 10px; height: calc(100svh - 50px); overflow-y: auto; touch-action: auto; }
-        .thumb-container { cursor: pointer; background: #000; border-radius: 4px; overflow: hidden; text-align: center; height: 150px; }
+        .thumb-container { cursor: pointer; background: #000; border-radius: 4px; overflow: hidden; text-align: center; height: 150px; box-sizing: border-box; }
         .thumb-container img { width: 100%; height: 120px; object-fit: contain; background: #222; }
+        .thumb-container.current { outline: 3px solid var(--accent-color); outline-offset: -3px; }
+        .thumb-container.current .thumb-page { color: #ffeb3b; font-weight: bold; }
+        #resume-btn { display: none; background: var(--accent-color); color: white; border: none; border-radius: 16px; padding: 6px 12px; font-size: 13px; font-weight: bold; cursor: pointer; white-space: nowrap; }
         #preview-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100svh; background: #000; z-index: 100; flex-direction: column; overflow: hidden; outline: none; }
         #zoom-container { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; cursor: grab; position: relative; }
         #image-area { display: flex; justify-content: center; align-items: center; transition: transform 0.05s linear; transform-origin: center; will-change: transform; }
@@ -46,7 +49,7 @@
 
 <header>
     <div id="status">待機中</div>
-    <div id="file-name" style="font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px;"></div>
+    <button type="button" id="resume-btn">続きから</button>
 </header>
 
 <div id="init-screen">
@@ -79,6 +82,7 @@
 
 <script>
     let zipEntries = [], blobCache = new Map(), currentIndex = 0, idleTimer, currentFileUrl = "";
+    let hasOpenedViewer = false;
     const state = {
         direction: localStorage.getItem('viewer-direction') || 'rtl',
         viewMode: (window.innerWidth > window.innerHeight) ? 'double' : 'single'
@@ -101,6 +105,7 @@
     const btnDirection = document.getElementById('btn-direction');
     const btnViewMode = document.getElementById('btn-viewmode');
     const controlsPanel = document.getElementById('controls-panel');
+    const resumeBtn = document.getElementById('resume-btn');
 
     window.onload = () => {
         applyOrientationViewMode();
@@ -205,6 +210,9 @@
             statusTxt.textContent = `${zipEntries.length}枚`;
             seekbar.max = zipEntries.length - 1;
             blobCache.clear();
+            currentIndex = 0;
+            hasOpenedViewer = false;
+            updateResumeButton();
             renderThumbnails();
             const savedPage = localStorage.getItem('last-page-' + currentFileUrl);
             if (savedPage !== null && zipEntries[savedPage]) {
@@ -218,16 +226,44 @@
         zipEntries.forEach((entry, index) => {
             const div = document.createElement('div');
             div.className = 'thumb-container';
+            div.dataset.index = String(index);
             div.onclick = () => { currentIndex = index; openViewer(); };
             thumbGrid.appendChild(div);
             (async () => {
                 const b = await entry.async("blob");
-                div.innerHTML = `<img src="${URL.createObjectURL(b)}"><div style="font-size:10px">${index + 1}</div>`;
+                div.innerHTML = `<img src="${URL.createObjectURL(b)}"><div class="thumb-page" style="font-size:10px">${index + 1}</div>`;
             })();
         });
+        if (hasOpenedViewer) markCurrentThumbnail(false);
     }
 
+    function markCurrentThumbnail(scroll) {
+        thumbGrid.querySelectorAll('.thumb-container.current').forEach((el) => el.classList.remove('current'));
+        const el = thumbGrid.querySelector(`.thumb-container[data-index="${currentIndex}"]`);
+        if (!el) return;
+        el.classList.add('current');
+        if (scroll) {
+            requestAnimationFrame(() => el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' }));
+        }
+    }
+
+    function updateResumeButton() {
+        if (hasOpenedViewer && zipEntries.length) {
+            resumeBtn.textContent = `続きから ${currentIndex + 1}`;
+            resumeBtn.style.display = 'inline-block';
+        } else {
+            resumeBtn.style.display = 'none';
+        }
+    }
+
+    resumeBtn.onclick = () => {
+        if (!hasOpenedViewer || !zipEntries.length) return;
+        openViewer();
+    };
+
     function openViewer() {
+        hasOpenedViewer = true;
+        updateResumeButton();
         overlay.style.display = 'flex';
         overlay.focus();
         updatePreview();
@@ -373,6 +409,8 @@
             if(document.exitFullscreen) document.exitFullscreen(); else if(document.webkitExitFullscreen) document.webkitExitFullscreen();
         }
         overlay.style.display = 'none'; resetZoom(); releaseWakeLock();
+        updateResumeButton();
+        markCurrentThumbnail(true);
     };
     seekbar.oninput = () => { currentIndex = parseInt(seekbar.value); updatePreview(); resetIdleTimer(); };
 </script>
