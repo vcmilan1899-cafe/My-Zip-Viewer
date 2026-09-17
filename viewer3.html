@@ -14,14 +14,16 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         :root { --bg-color: #1a1a1a; --text-color: #eee; --accent-color: #4488ff; }
-        body { background: var(--bg-color); color: var(--text-color); font-family: sans-serif; margin: 0; overflow: hidden; touch-action: none; }
-        header { height: 50px; padding: 0 15px; background: #333; display: flex; align-items: center; justify-content: space-between; z-index: 10; box-sizing: border-box; gap: 8px; }
+        body { background: var(--bg-color); color: var(--text-color); font-family: sans-serif; margin: 0; overflow: hidden; touch-action: none; display: flex; flex-direction: column; height: 100svh; height: 100dvh; }
+        header { flex-shrink: 0; min-height: 50px; height: auto; padding: max(env(safe-area-inset-top, 0px), 0px) max(12px, env(safe-area-inset-right, 0px)) 8px max(12px, env(safe-area-inset-left, 0px)); background: #333; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; z-index: 10; box-sizing: border-box; gap: 8px; }
+        @media (display-mode: standalone), (display-mode: fullscreen) {
+            header { padding-top: max(env(safe-area-inset-top, 0px), 36px); }
+        }
         #status { font-size: 14px; color: #ffeb3b; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        #header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-        #init-screen { height: calc(100svh - 50px); display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 20px; text-align: center; padding: 20px; }
+        #init-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 20px; text-align: center; padding: 20px; }
         .btn-primary { background: var(--accent-color); color: white; padding: 15px 30px; border-radius: 8px; cursor: pointer; font-weight: bold; border: none; }
         input[type="file"] { display: none; }
-        #thumbnail-grid { display: none; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; padding: 10px; height: calc(100svh - 50px); overflow-y: auto; touch-action: auto; }
+        #thumbnail-grid { display: none; flex: 1; min-height: 0; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; padding: 10px; overflow-y: auto; touch-action: auto; }
         .thumb-container { cursor: pointer; background: #000; border-radius: 4px; overflow: hidden; text-align: center; height: 150px; box-sizing: border-box; }
         .thumb-container img { width: 100%; height: 120px; object-fit: contain; background: #222; }
         .thumb-container.current { outline: 3px solid var(--accent-color); outline-offset: -3px; }
@@ -51,11 +53,9 @@
 <body>
 
 <header>
+    <button type="button" id="open-other-btn">別の本</button>
     <div id="status">待機中</div>
-    <div id="header-actions">
-        <button type="button" id="resume-btn">続きから</button>
-        <button type="button" id="open-other-btn">別の本</button>
-    </div>
+    <button type="button" id="resume-btn">続きから</button>
 </header>
 
 <div id="init-screen">
