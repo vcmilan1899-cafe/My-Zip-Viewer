@@ -15,8 +15,9 @@
     <style>
         :root { --bg-color: #1a1a1a; --text-color: #eee; --accent-color: #4488ff; }
         body { background: var(--bg-color); color: var(--text-color); font-family: sans-serif; margin: 0; overflow: hidden; touch-action: none; }
-        header { height: 50px; padding: 0 15px; background: #333; display: flex; align-items: center; justify-content: space-between; z-index: 10; box-sizing: border-box; }
-        #status { font-size: 14px; color: #ffeb3b; }
+        header { height: 50px; padding: 0 15px; background: #333; display: flex; align-items: center; justify-content: space-between; z-index: 10; box-sizing: border-box; gap: 8px; }
+        #status { font-size: 14px; color: #ffeb3b; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
         #init-screen { height: calc(100svh - 50px); display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 20px; text-align: center; padding: 20px; }
         .btn-primary { background: var(--accent-color); color: white; padding: 15px 30px; border-radius: 8px; cursor: pointer; font-weight: bold; border: none; }
         input[type="file"] { display: none; }
@@ -25,7 +26,9 @@
         .thumb-container img { width: 100%; height: 120px; object-fit: contain; background: #222; }
         .thumb-container.current { outline: 3px solid var(--accent-color); outline-offset: -3px; }
         .thumb-container.current .thumb-page { color: #ffeb3b; font-weight: bold; }
-        #resume-btn { display: none; background: var(--accent-color); color: white; border: none; border-radius: 16px; padding: 6px 12px; font-size: 13px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+        #resume-btn, #open-other-btn { display: none; color: white; border: none; border-radius: 16px; padding: 6px 12px; font-size: 13px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+        #resume-btn { background: var(--accent-color); }
+        #open-other-btn { background: #555; border: 1px solid #777; }
         #preview-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100svh; background: #000; z-index: 100; flex-direction: column; overflow: hidden; outline: none; }
         #zoom-container { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; cursor: grab; position: relative; }
         #image-area { display: flex; justify-content: center; align-items: center; transition: transform 0.05s linear; transform-origin: center; will-change: transform; }
@@ -49,7 +52,10 @@
 
 <header>
     <div id="status">待機中</div>
-    <button type="button" id="resume-btn">続きから</button>
+    <div id="header-actions">
+        <button type="button" id="resume-btn">続きから</button>
+        <button type="button" id="open-other-btn">別の本</button>
+    </div>
 </header>
 
 <div id="init-screen">
@@ -106,6 +112,8 @@
     const btnViewMode = document.getElementById('btn-viewmode');
     const controlsPanel = document.getElementById('controls-panel');
     const resumeBtn = document.getElementById('resume-btn');
+    const openOtherBtn = document.getElementById('open-other-btn');
+    const fileInput = document.getElementById('file-input');
 
     window.onload = () => {
         applyOrientationViewMode();
@@ -178,12 +186,15 @@
         else releaseWakeLock();
     });
 
-    document.getElementById('file-input').onchange = (e) => {
+    fileInput.onchange = (e) => {
         const file = e.target.files[0];
+        fileInput.value = "";
         if (!file) return;
         currentFileUrl = "local:" + file.name;
         processZip(file);
     };
+
+    openOtherBtn.onclick = () => fileInput.click();
 
     async function loadFromUrl(url) {
         statusTxt.textContent = "ダウンロード中...";
@@ -198,21 +209,43 @@
         }
     }
 
+    function closeViewerOverlay() {
+        if (!isViewerOpen()) return;
+        overlay.style.display = 'none';
+        resetZoom();
+        releaseWakeLock();
+    }
+
+    function revokeCachedUrls() {
+        blobCache.forEach((url) => URL.revokeObjectURL(url));
+        blobCache.clear();
+        thumbGrid.querySelectorAll('img').forEach((img) => {
+            if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+        });
+    }
+
+    function updateOpenOtherButton() {
+        openOtherBtn.style.display = zipEntries.length ? 'inline-block' : 'none';
+    }
+
     async function processZip(blob) {
         try {
             const zip = await JSZip.loadAsync(blob);
-            zipEntries = [];
-            zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) zipEntries.push(entry); });
-            zipEntries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-            if (zipEntries.length === 0) throw new Error("画像なし");
+            const nextEntries = [];
+            zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) nextEntries.push(entry); });
+            nextEntries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+            if (nextEntries.length === 0) throw new Error("画像なし");
+            closeViewerOverlay();
+            revokeCachedUrls();
+            zipEntries = nextEntries;
             initScreen.style.display = 'none';
             thumbGrid.style.display = 'grid';
             statusTxt.textContent = `${zipEntries.length}枚`;
             seekbar.max = zipEntries.length - 1;
-            blobCache.clear();
             currentIndex = 0;
             hasOpenedViewer = false;
             updateResumeButton();
+            updateOpenOtherButton();
             renderThumbnails();
             const savedPage = localStorage.getItem('last-page-' + currentFileUrl);
             if (savedPage !== null && zipEntries[savedPage]) {
