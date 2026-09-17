@@ -1,4 +1,4 @@
-const CACHE_NAME = 'zip-viewer-v8';
+const CACHE_NAME = 'zip-viewer-v9';
 const ASSETS = [
   './index.html',
   './viewer3.html',
