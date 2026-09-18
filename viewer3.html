@@ -48,6 +48,10 @@
         .rtl-bar { direction: rtl; }
         .ltr-bar { direction: ltr; }
         #page-count { margin-top: 5px; font-weight: bold; }
+        #volume-row { display: none; gap: 10px; margin-top: 12px; }
+        #volume-row.show { display: flex; }
+        #btn-prev-vol, #btn-next-vol { background: #444; color: #fff; border: 1px solid #666; padding: 10px 18px; border-radius: 25px; font-size: 13px; cursor: pointer; min-width: 100px; }
+        #btn-prev-vol:disabled, #btn-next-vol:disabled { opacity: .35; cursor: default; }
     </style>
 </head>
 <body>
@@ -83,12 +87,18 @@
             <input type="range" id="seekbar" min="0" value="0" step="1">
         </div>
         <div id="page-count">0 / 0</div>
+        <div id="volume-row">
+            <button type="button" id="btn-prev-vol">前の巻</button>
+            <button type="button" id="btn-next-vol">次の巻</button>
+        </div>
     </div>
 </div>
 
 <script>
     let zipEntries = [], blobCache = new Map(), currentIndex = 0, idleTimer, currentFileUrl = "";
     let hasOpenedViewer = false;
+    let series = null;
+    let volumeLoading = false;
     const state = {
         direction: localStorage.getItem('viewer-direction') || 'rtl',
         viewMode: (window.innerWidth > window.innerHeight) ? 'double' : 'single'
@@ -114,6 +124,9 @@
     const resumeBtn = document.getElementById('resume-btn');
     const openOtherBtn = document.getElementById('open-other-btn');
     const fileInput = document.getElementById('file-input');
+    const volumeRow = document.getElementById('volume-row');
+    const btnPrevVol = document.getElementById('btn-prev-vol');
+    const btnNextVol = document.getElementById('btn-next-vol');
 
     window.onload = () => {
         applyOrientationViewMode();
@@ -122,8 +135,94 @@
         }
         const params = new URLSearchParams(window.location.search);
         currentFileUrl = params.get('file');
+        series = parseSeriesFromHash(currentFileUrl);
+        applyBindDirection();
+        updateVolumeButtons();
         if (currentFileUrl) loadFromUrl(currentFileUrl);
     };
+
+    function parseSeriesFromHash(fileUrl) {
+        const raw = (location.hash || '').replace(/^#/, '');
+        if (!raw) return null;
+        try {
+            const data = JSON.parse(new URLSearchParams(raw).get('s') || '');
+            if (!data || typeof data !== 'object') return null;
+            const files = Array.isArray(data.f) ? data.f.map(String) : [];
+            if (!files.length && fileUrl) files.push(fileUrl);
+            if (!files.length && !data.t && !data.a) return null;
+            let i = Number(data.i);
+            if (!Number.isInteger(i) || i < 0 || i >= files.length) {
+                i = fileUrl ? files.indexOf(fileUrl) : 0;
+                if (i < 0) i = 0;
+            }
+            return { i, f: files, t: data.t ? String(data.t) : '', a: data.a ? String(data.a) : '' };
+        } catch {
+            return null;
+        }
+    }
+
+    function seriesLocation(fileUrl, seriesData) {
+        const u = new URL(location.href);
+        u.searchParams.set('file', fileUrl);
+        u.searchParams.set('dir', state.direction);
+        const payload = { i: seriesData.i, f: seriesData.f };
+        if (seriesData.t) payload.t = seriesData.t;
+        if (seriesData.a) payload.a = seriesData.a;
+        u.hash = 's=' + encodeURIComponent(JSON.stringify(payload));
+        return u.pathname + u.search + u.hash;
+    }
+
+    function titleBindKey() {
+        return series && series.t ? 'viewer-direction-title-' + series.t : '';
+    }
+
+    function resolveDirection() {
+        const q = new URLSearchParams(location.search).get('dir');
+        if (q === 'rtl' || q === 'ltr') return q;
+        const key = titleBindKey();
+        if (key) {
+            const saved = localStorage.getItem(key);
+            if (saved === 'rtl' || saved === 'ltr') return saved;
+        }
+        return localStorage.getItem('viewer-direction') || 'rtl';
+    }
+
+    function applyBindDirection() {
+        state.direction = resolveDirection();
+        applySettingStyles();
+    }
+
+    function persistDirection() {
+        const key = titleBindKey();
+        if (key) localStorage.setItem(key, state.direction);
+        else localStorage.setItem('viewer-direction', state.direction);
+        if (series && currentFileUrl) updateSeriesLocation();
+        else {
+            const u = new URL(location.href);
+            u.searchParams.set('dir', state.direction);
+            history.replaceState(null, '', u.pathname + u.search + u.hash);
+        }
+        if (!series || !series.t || !series.a) return;
+        const api = String(series.a).replace(/\/+$/, '') + '/api/title/' + encodeURIComponent(series.t) + '/bind';
+        fetch(api, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bind: state.direction }),
+        }).catch(() => {});
+    }
+
+    function updateSeriesLocation() {
+        if (!series || !currentFileUrl) return;
+        history.replaceState(null, '', seriesLocation(currentFileUrl, series));
+    }
+
+    function updateVolumeButtons() {
+        const hasSeries = !!(series && series.f && series.f.length > 1);
+        volumeRow.classList.toggle('show', hasSeries);
+        if (!hasSeries) return;
+        btnPrevVol.disabled = volumeLoading || series.i <= 0;
+        btnNextVol.disabled = volumeLoading || series.i >= series.f.length - 1;
+    }
 
     function isLandscape() {
         return window.innerWidth > window.innerHeight;
@@ -191,22 +290,51 @@
         fileInput.value = "";
         if (!file) return;
         currentFileUrl = "local:" + file.name;
+        series = null;
+        applyBindDirection();
+        updateVolumeButtons();
         processZip(file);
     };
 
     openOtherBtn.onclick = () => fileInput.click();
 
-    async function loadFromUrl(url) {
+    async function loadFromUrl(url, opts) {
         statusTxt.textContent = "ダウンロード中...";
         try {
             const response = await fetch(url);
             if (!response.ok) throw new Error("取得失敗");
             const blob = await response.blob();
-            processZip(blob);
+            return await processZip(blob, opts);
         } catch (err) {
             statusTxt.textContent = "取得失敗";
-            initScreen.style.display = 'flex';
+            if (!(opts && opts.stayOpen)) initScreen.style.display = 'flex';
+            return false;
         }
+    }
+
+    async function loadVolume(delta, startAt) {
+        if (volumeLoading || !series) return false;
+        const ni = series.i + delta;
+        if (ni < 0 || ni >= series.f.length) return false;
+        volumeLoading = true;
+        updateVolumeButtons();
+        statusTxt.textContent = delta > 0 ? "次の巻を読み込み中..." : "前の巻を読み込み中...";
+        const url = series.f[ni];
+        const prevUrl = currentFileUrl;
+        const prevI = series.i;
+        currentFileUrl = url;
+        series.i = ni;
+        const ok = await loadFromUrl(url, { stayOpen: true, startAt });
+        volumeLoading = false;
+        if (ok) {
+            updateSeriesLocation();
+            updateVolumeButtons();
+            return true;
+        }
+        currentFileUrl = prevUrl;
+        series.i = prevI;
+        updateVolumeButtons();
+        return false;
     }
 
     function closeViewerOverlay() {
@@ -228,30 +356,40 @@
         openOtherBtn.style.display = zipEntries.length ? 'inline-block' : 'none';
     }
 
-    async function processZip(blob) {
+    async function processZip(blob, opts) {
+        const stayOpen = !!(opts && opts.stayOpen);
+        const startAt = (opts && opts.startAt) || 'resume';
         try {
             const zip = await JSZip.loadAsync(blob);
             const nextEntries = [];
             zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) nextEntries.push(entry); });
             nextEntries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
             if (nextEntries.length === 0) throw new Error("画像なし");
-            closeViewerOverlay();
+            if (!stayOpen) closeViewerOverlay();
             revokeCachedUrls();
             zipEntries = nextEntries;
             initScreen.style.display = 'none';
             thumbGrid.style.display = 'grid';
             statusTxt.textContent = `${zipEntries.length}枚`;
             seekbar.max = zipEntries.length - 1;
-            currentIndex = 0;
-            hasOpenedViewer = false;
+            if (startAt === 'last') currentIndex = Math.max(0, zipEntries.length - 1);
+            else currentIndex = 0;
+            hasOpenedViewer = stayOpen;
             updateResumeButton();
             updateOpenOtherButton();
+            updateVolumeButtons();
             renderThumbnails();
-            const savedPage = localStorage.getItem('last-page-' + currentFileUrl);
-            if (savedPage !== null && zipEntries[savedPage]) {
-                if (confirm("続きから読みますか？")) { currentIndex = parseInt(savedPage); openViewer(); }
+            if (stayOpen) {
+                openViewer();
+                return true;
             }
-        } catch (err) { alert(err.message); }
+            const savedPage = localStorage.getItem('last-page-' + currentFileUrl);
+            if (savedPage !== null && zipEntries[savedPage] && confirm("続きから読みますか？")) {
+                currentIndex = parseInt(savedPage);
+            }
+            openViewer();
+            return true;
+        } catch (err) { alert(err.message); return false; }
     }
 
     function renderThumbnails() {
@@ -344,18 +482,29 @@
         nextPrev(y > h * 0.5 ? 1 : -1);
     }
 
-    function nextPrev(n) {
-        if (scale > 1) return;
+    async function nextPrev(n) {
+        if (scale > 1 || volumeLoading) return;
         const step = (state.viewMode === 'double' ? 2 : 1);
-        currentIndex += (n * step);
-        currentIndex = Math.max(0, Math.min(currentIndex, zipEntries.length - 1));
+        const nextIndex = currentIndex + (n * step);
+        if (nextIndex < 0) {
+            if (await loadVolume(-1, 'last')) return;
+            currentIndex = 0;
+        } else if (nextIndex > zipEntries.length - 1) {
+            if (await loadVolume(1, 'first')) return;
+            currentIndex = zipEntries.length - 1;
+        } else {
+            currentIndex = nextIndex;
+        }
         updatePreview();
     }
+
+    btnPrevVol.onclick = (e) => { e.stopPropagation(); loadVolume(-1, 'last'); };
+    btnNextVol.onclick = (e) => { e.stopPropagation(); loadVolume(1, 'first'); };
 
     btnDirection.onclick = (e) => {
         e.stopPropagation();
         state.direction = (state.direction === 'rtl') ? 'ltr' : 'rtl';
-        localStorage.setItem('viewer-direction', state.direction);
+        persistDirection();
         applySettingStyles(); updatePreview(); resetIdleTimer();
     };
 
