@@ -83,7 +83,7 @@
 </header>
 
 <div id="init-screen">
-    <div id="init-msg">NASから開くか、ファイルを選択してください</div>
+    <div id="init-msg">書庫から読むか、ファイルを選択してください。<br>外出用は開いたあと「この本を端末に保存」を押してください。</div>
     <label class="btn-primary">ファイルを選択<input type="file" id="file-input" accept=".zip"></label>
 </div>
 
@@ -175,18 +175,56 @@
     const btnSaveNext = document.getElementById('btn-save-next');
     const btnSaveNextView = document.getElementById('btn-save-next-view');
 
-    window.onload = () => {
+    window.onload = async () => {
         applyOrientationViewMode();
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('./sw.js').catch(() => {});
         }
         const params = new URLSearchParams(window.location.search);
         currentFileUrl = params.get('file');
+        const wantAutosave = params.get('save') === '1';
         series = parseSeriesFromHash(currentFileUrl);
         applyBindDirection();
         updateVolumeButtons();
-        if (currentFileUrl) loadFromUrl(currentFileUrl);
+        if (currentFileUrl) {
+            const ok = await loadFromUrl(currentFileUrl, { autosave: wantAutosave });
+            if (wantAutosave) clearSaveQuery();
+            if (!ok) await openShelfIfAny();
+            return;
+        }
+        await openShelfIfAny();
     };
+
+    function clearSaveQuery() {
+        const u = new URL(location.href);
+        if (!u.searchParams.has('save')) return;
+        u.searchParams.delete('save');
+        history.replaceState(null, '', u.pathname + u.search + u.hash);
+    }
+
+    async function countSavedBooks() {
+        if (!window.indexedDB) return 0;
+        try {
+            const db = await openBookDb();
+            const rows = await idbDone(db.transaction("books").objectStore("books").getAll());
+            db.close();
+            return rows.filter((row) => row && row.meta && row.zip).length;
+        } catch (err) {
+            return 0;
+        }
+    }
+
+    async function openShelfIfAny() {
+        const n = await countSavedBooks();
+        if (n > 0) {
+            initScreen.style.display = "none";
+            await showLocalShelf();
+            statusTxt.textContent = `端末の本 ${n}冊`;
+            return true;
+        }
+        initScreen.style.display = "flex";
+        return false;
+    }
 
     function parseSeriesFromHash(fileUrl) {
         const raw = (location.hash || '').replace(/^#/, '');
@@ -359,7 +397,10 @@
             return await processZip(blob, opts);
         } catch (err) {
             statusTxt.textContent = "取得失敗";
-            if (!(opts && opts.stayOpen)) initScreen.style.display = 'flex';
+            if (!(opts && opts.stayOpen)) {
+                const shown = await openShelfIfAny();
+                if (!shown) initScreen.style.display = 'flex';
+            }
             return false;
         }
     }
@@ -434,28 +475,38 @@
         }
     }
 
-    async function bookId(sourceUrl) {
+    function bookId(sourceUrl) {
         const text = String(sourceUrl || "book");
-        if (crypto.subtle) {
-            const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-            return [...new Uint8Array(buf)].slice(0, 12).map((b) => b.toString(16).padStart(2, "0")).join("");
+        let h = 2166136261;
+        for (let i = 0; i < text.length; i++) {
+            h ^= text.charCodeAt(i);
+            h = Math.imul(h, 16777619);
         }
-        return text.replace(/[^a-zA-Z0-9]/g, "").slice(-24) || "book";
+        return (h >>> 0).toString(16) + "-" + text.length.toString(16);
     }
 
-    async function booksRoot() {
-        if (!navigator.storage || !navigator.storage.getDirectory) {
-            throw new Error("このブラウザでは端末保存に対応していません");
-        }
-        const root = await navigator.storage.getDirectory();
-        return root.getDirectoryHandle("books", { create: true });
+    function openBookDb() {
+        return new Promise((resolve, reject) => {
+            if (!window.indexedDB) {
+                reject(new Error("このブラウザでは端末保存に対応していません"));
+                return;
+            }
+            const req = indexedDB.open("zip-viewer-books", 1);
+            req.onupgradeneeded = () => {
+                if (!req.result.objectStoreNames.contains("books")) {
+                    req.result.createObjectStore("books", { keyPath: "id" });
+                }
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error || new Error("端末保存を開始できません"));
+        });
     }
 
-    async function writeOpfsFile(dir, name, data) {
-        const handle = await dir.getFileHandle(name, { create: true });
-        const writable = await handle.createWritable();
-        await writable.write(data);
-        await writable.close();
+    function idbDone(req) {
+        return new Promise((resolve, reject) => {
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error || new Error("端末保存に失敗しました"));
+        });
     }
 
     async function ensureSpace(bytes) {
@@ -469,12 +520,12 @@
     }
 
     async function readSavedZip(sourceUrl) {
-        if (!sourceUrl || !navigator.storage || !navigator.storage.getDirectory) return null;
+        if (!sourceUrl || !window.indexedDB) return null;
         try {
-            const root = await booksRoot();
-            const dir = await root.getDirectoryHandle(await bookId(sourceUrl));
-            const handle = await dir.getFileHandle("book.zip");
-            return await handle.getFile();
+            const db = await openBookDb();
+            const row = await idbDone(db.transaction("books").objectStore("books").get(bookId(sourceUrl)));
+            db.close();
+            return row && row.zip ? row.zip : null;
         } catch (err) {
             return null;
         }
@@ -491,17 +542,16 @@
 
     async function saveZipToDevice(blob, sourceUrl, seriesData) {
         await ensureSpace(blob.size);
-        if (navigator.storage && navigator.storage.persist) await navigator.storage.persist();
+        if (navigator.storage && navigator.storage.persist) {
+            try { await navigator.storage.persist(); } catch (err) {}
+        }
         const zip = await JSZip.loadAsync(blob);
         const images = [];
         zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) images.push(entry); });
         images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
         if (!images.length) throw new Error("画像なし");
         const coverBlob = await images[0].async("blob");
-        const id = await bookId(sourceUrl);
-        const dir = await (await booksRoot()).getDirectoryHandle(id, { create: true });
-        await writeOpfsFile(dir, "book.zip", blob);
-        await writeOpfsFile(dir, "cover", coverBlob);
+        const id = bookId(sourceUrl);
         const meta = {
             sourceUrl,
             name: bookTitle(sourceUrl),
@@ -510,7 +560,9 @@
             coverType: coverBlob.type || "image/jpeg",
             series: seriesData ? { i: seriesData.i, f: seriesData.f, t: seriesData.t || "", a: seriesData.a || "" } : null
         };
-        await writeOpfsFile(dir, "meta.json", new Blob([JSON.stringify(meta)], { type: "application/json" }));
+        const db = await openBookDb();
+        await idbDone(db.transaction("books", "readwrite").objectStore("books").put({ id, meta, zip: blob, cover: coverBlob }));
+        db.close();
     }
 
     async function saveCurrentBook() {
@@ -571,17 +623,15 @@
                 const freeMb = Math.max(0, Math.round(((estimate.quota || 0) - (estimate.usage || 0)) / 1024 / 1024));
                 freeNote = `空き約 ${freeMb} MB`;
             }
-            const root = await booksRoot();
-            const books = [];
-            for await (const [name, handle] of root.entries()) {
-                if (handle.kind !== "directory") continue;
-                try {
-                    const metaFile = await (await handle.getFileHandle("meta.json")).getFile();
-                    const meta = JSON.parse(await metaFile.text());
-                    const coverFile = await (await handle.getFileHandle("cover")).getFile();
-                    books.push({ id: name, meta, coverFile, dir: handle });
-                } catch (err) {}
-            }
+            const db = await openBookDb();
+            const rows = await idbDone(db.transaction("books").objectStore("books").getAll());
+            db.close();
+            const books = rows.filter((row) => row && row.meta && row.cover && row.zip).map((row) => ({
+                id: row.id,
+                meta: row.meta,
+                coverFile: row.cover,
+                zip: row.zip
+            }));
             books.sort((a, b) => (b.meta.savedAt || 0) - (a.meta.savedAt || 0));
             localShelfNote.textContent = books.length ? `${books.length}冊　${freeNote}` : `保存した本はありません。${freeNote}`;
             localShelfGrid.innerHTML = "";
@@ -614,7 +664,7 @@
     }
 
     async function openSavedBook(book) {
-        const file = await (await book.dir.getFileHandle("book.zip")).getFile();
+        const file = book.zip;
         currentFileUrl = book.meta.sourceUrl || "";
         series = book.meta.series || null;
         applyBindDirection();
@@ -626,8 +676,9 @@
 
     async function deleteSavedBook(id) {
         if (!confirm("この本を端末から削除しますか？")) return;
-        const root = await booksRoot();
-        await root.removeEntry(id, { recursive: true });
+        const db = await openBookDb();
+        await idbDone(db.transaction("books", "readwrite").objectStore("books").delete(id));
+        db.close();
         showLocalShelf();
     }
 
@@ -653,6 +704,7 @@
     async function processZip(blob, opts) {
         const stayOpen = !!(opts && opts.stayOpen);
         const startAt = (opts && opts.startAt) || 'resume';
+        const autosave = !!(opts && opts.autosave);
         try {
             currentZipBlob = blob;
             hideLocalShelf();
@@ -676,6 +728,14 @@
             updateVolumeButtons();
             updateSaveButtons();
             renderThumbnails();
+            if (autosave && currentFileUrl && currentZipBlob) {
+                try {
+                    await saveZipToDevice(currentZipBlob, currentFileUrl, series);
+                    statusTxt.textContent = `${zipEntries.length}枚・端末に保存済み`;
+                } catch (err) {
+                    alert(err.message || "端末への保存に失敗しました");
+                }
+            }
             if (stayOpen) {
                 openViewer();
                 return true;
