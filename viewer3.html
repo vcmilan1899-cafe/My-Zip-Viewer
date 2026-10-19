@@ -15,10 +15,11 @@
     <style>
         :root { --bg-color: #1a1a1a; --text-color: #eee; --accent-color: #4488ff; }
         body { background: var(--bg-color); color: var(--text-color); font-family: sans-serif; margin: 0; overflow: hidden; touch-action: none; display: flex; flex-direction: column; height: 100svh; height: 100dvh; }
-        header { flex-shrink: 0; min-height: 50px; height: 50px; padding: 0 12px; margin-top: calc(-1 * env(safe-area-inset-top, 0px)); background: #333; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; z-index: 10; box-sizing: border-box; gap: 8px; }
+        header { flex-shrink: 0; min-height: 50px; height: auto; padding: 8px 12px; margin-top: calc(-1 * env(safe-area-inset-top, 0px)); background: #333; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; z-index: 10; box-sizing: border-box; gap: 8px; }
         @supports (-webkit-touch-callout: none) {
-            header { margin-top: 0; padding-top: env(safe-area-inset-top, 0px); height: auto; min-height: calc(50px + env(safe-area-inset-top, 0px)); }
+            header { margin-top: 0; padding-top: max(8px, env(safe-area-inset-top, 0px)); }
         }
+        #header-side { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
         #status { font-size: 14px; color: #ffeb3b; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         #init-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 20px; text-align: center; padding: 20px; }
         .btn-primary { background: var(--accent-color); color: white; padding: 15px 30px; border-radius: 8px; cursor: pointer; font-weight: bold; border: none; }
@@ -28,9 +29,22 @@
         .thumb-container img { width: 100%; height: 120px; object-fit: contain; background: #222; }
         .thumb-container.current { outline: 3px solid var(--accent-color); outline-offset: -3px; }
         .thumb-container.current .thumb-page { color: #ffeb3b; font-weight: bold; }
-        #resume-btn, #open-other-btn { display: none; color: white; border: none; border-radius: 16px; padding: 6px 12px; font-size: 13px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+        #resume-btn, #open-other-btn, #local-shelf-btn { color: white; border: none; border-radius: 16px; padding: 6px 12px; font-size: 13px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+        #resume-btn, #open-other-btn { display: none; }
         #resume-btn { background: var(--accent-color); }
-        #open-other-btn { background: #555; border: 1px solid #777; }
+        #open-other-btn, #local-shelf-btn { background: #555; border: 1px solid #777; }
+        #list-tools { display: none; gap: 8px; padding: 8px 10px; flex-wrap: wrap; flex-shrink: 0; }
+        #list-tools.show { display: flex; }
+        #list-tools button, #save-row button { background: #444; color: #fff; border: 1px solid #666; padding: 8px 14px; border-radius: 20px; font-size: 13px; cursor: pointer; }
+        #save-row { display: none; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+        #save-row.show { display: flex; }
+        #local-shelf { display: none; flex: 1; min-height: 0; overflow-y: auto; touch-action: auto; padding: 10px; }
+        #local-shelf-note { color: #aaa; font-size: 12px; margin: 0 0 10px; }
+        #local-shelf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; }
+        .local-book { background: #000; border-radius: 4px; overflow: hidden; text-align: center; cursor: pointer; }
+        .local-book img { width: 100%; height: 140px; object-fit: contain; background: #222; display: block; }
+        .local-book .local-name { font-size: 11px; padding: 6px 4px 2px; word-break: break-all; }
+        .local-book .local-delete { margin: 0 0 8px; background: transparent; color: #f88; border: none; font-size: 11px; cursor: pointer; }
         #preview-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100svh; background: #000; z-index: 100; flex-direction: column; overflow: hidden; outline: none; }
         #zoom-container { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; cursor: grab; position: relative; }
         #image-area { display: flex; justify-content: center; align-items: center; transition: transform 0.05s linear; transform-origin: center; will-change: transform; }
@@ -52,7 +66,7 @@
         #volume-row.show { display: flex; }
         #btn-prev-vol, #btn-next-vol { background: #444; color: #fff; border: 1px solid #666; padding: 10px 18px; border-radius: 25px; font-size: 13px; cursor: pointer; min-width: 100px; }
         #btn-prev-vol:disabled, #btn-next-vol:disabled { opacity: .35; cursor: default; }
-        #volume-toast { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.35); z-index: 250; opacity: 0; visibility: hidden; transition: opacity 0.28s ease, visibility 0.28s ease; pointer-events: none; }
+        #volume-toast { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.35); z-index: 300; opacity: 0; visibility: hidden; transition: opacity 0.28s ease, visibility 0.28s ease; pointer-events: none; }
         #volume-toast.show { opacity: 1; visibility: visible; pointer-events: auto; }
         #volume-toast span { background: rgba(0,0,0,0.75); color: #fff; padding: 16px 28px; border-radius: 12px; font-size: 16px; font-weight: bold; letter-spacing: 0.04em; text-align: center; }
     </style>
@@ -60,7 +74,10 @@
 <body>
 
 <header>
-    <button type="button" id="open-other-btn">別の本</button>
+    <div id="header-side">
+        <button type="button" id="local-shelf-btn">端末の本</button>
+        <button type="button" id="open-other-btn">別の本</button>
+    </div>
     <div id="status">待機中</div>
     <button type="button" id="resume-btn">続きから</button>
 </header>
@@ -70,7 +87,17 @@
     <label class="btn-primary">ファイルを選択<input type="file" id="file-input" accept=".zip"></label>
 </div>
 
+<div id="list-tools">
+    <button type="button" id="btn-save-book">この本を端末に保存</button>
+    <button type="button" id="btn-save-next">次の巻も保存</button>
+</div>
+
 <div id="thumbnail-grid"></div>
+
+<div id="local-shelf">
+    <p id="local-shelf-note"></p>
+    <div id="local-shelf-grid"></div>
+</div>
 
 <div id="preview-overlay" tabindex="0">
     <button id="close-btn">一覧</button>
@@ -94,13 +121,19 @@
             <button type="button" id="btn-prev-vol">前の巻</button>
             <button type="button" id="btn-next-vol">次の巻</button>
         </div>
-    </div>
-    <div id="volume-toast" aria-live="polite"><span></span></div>
+        <div id="save-row">
+            <button type="button" id="btn-save-book-view">この本を端末に保存</button>
+            <button type="button" id="btn-save-next-view">次の巻も保存</button>
+        </div>
+        </div>
 </div>
+<div id="volume-toast" aria-live="polite"><span></span></div>
 
 <script>
     let zipEntries = [], blobCache = new Map(), currentIndex = 0, idleTimer, currentFileUrl = "";
+    let currentZipBlob = null;
     let hasOpenedViewer = false;
+    let shelfCoverUrls = [];
     let series = null;
     let volumeLoading = false;
     const state = {
@@ -133,6 +166,14 @@
     const btnNextVol = document.getElementById('btn-next-vol');
     const volumeToast = document.getElementById('volume-toast');
     const volumeToastText = volumeToast.querySelector('span');
+    const localShelfBtn = document.getElementById('local-shelf-btn');
+    const localShelf = document.getElementById('local-shelf');
+    const localShelfNote = document.getElementById('local-shelf-note');
+    const localShelfGrid = document.getElementById('local-shelf-grid');
+    const listTools = document.getElementById('list-tools');
+    const saveRow = document.getElementById('save-row');
+    const btnSaveNext = document.getElementById('btn-save-next');
+    const btnSaveNextView = document.getElementById('btn-save-next-view');
 
     window.onload = () => {
         applyOrientationViewMode();
@@ -305,6 +346,11 @@
     openOtherBtn.onclick = () => fileInput.click();
 
     async function loadFromUrl(url, opts) {
+        const saved = await readSavedZip(url);
+        if (saved) {
+            statusTxt.textContent = "端末の本を開いています";
+            return processZip(saved, opts);
+        }
         statusTxt.textContent = "ダウンロード中...";
         try {
             const response = await fetch(url);
@@ -377,10 +423,239 @@
         openOtherBtn.style.display = zipEntries.length ? 'inline-block' : 'none';
     }
 
+    function bookTitle(sourceUrl) {
+        if (!sourceUrl) return "無題";
+        if (sourceUrl.startsWith("local:")) return sourceUrl.slice(6);
+        try {
+            const last = decodeURIComponent(new URL(sourceUrl).pathname.split("/").filter(Boolean).pop() || "");
+            return last || sourceUrl;
+        } catch (err) {
+            return sourceUrl;
+        }
+    }
+
+    async function bookId(sourceUrl) {
+        const text = String(sourceUrl || "book");
+        if (crypto.subtle) {
+            const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+            return [...new Uint8Array(buf)].slice(0, 12).map((b) => b.toString(16).padStart(2, "0")).join("");
+        }
+        return text.replace(/[^a-zA-Z0-9]/g, "").slice(-24) || "book";
+    }
+
+    async function booksRoot() {
+        if (!navigator.storage || !navigator.storage.getDirectory) {
+            throw new Error("このブラウザでは端末保存に対応していません");
+        }
+        const root = await navigator.storage.getDirectory();
+        return root.getDirectoryHandle("books", { create: true });
+    }
+
+    async function writeOpfsFile(dir, name, data) {
+        const handle = await dir.getFileHandle(name, { create: true });
+        const writable = await handle.createWritable();
+        await writable.write(data);
+        await writable.close();
+    }
+
+    async function ensureSpace(bytes) {
+        if (!navigator.storage || !navigator.storage.estimate) return;
+        const estimate = await navigator.storage.estimate();
+        const free = (estimate.quota || 0) - (estimate.usage || 0);
+        if (bytes > free) {
+            const mb = Math.max(0, Math.floor(free / 1024 / 1024));
+            throw new Error(`空き容量が足りません（残り約${mb}MB）`);
+        }
+    }
+
+    async function readSavedZip(sourceUrl) {
+        if (!sourceUrl || !navigator.storage || !navigator.storage.getDirectory) return null;
+        try {
+            const root = await booksRoot();
+            const dir = await root.getDirectoryHandle(await bookId(sourceUrl));
+            const handle = await dir.getFileHandle("book.zip");
+            return await handle.getFile();
+        } catch (err) {
+            return null;
+        }
+    }
+
+    function updateSaveButtons() {
+        const canSave = !!(currentZipBlob && zipEntries.length);
+        const canSaveNext = !!(series && series.f && series.i < series.f.length - 1);
+        listTools.classList.toggle("show", canSave && localShelf.style.display !== "block");
+        saveRow.classList.toggle("show", canSave);
+        btnSaveNext.style.display = canSaveNext ? "" : "none";
+        btnSaveNextView.style.display = canSaveNext ? "" : "none";
+    }
+
+    async function saveZipToDevice(blob, sourceUrl, seriesData) {
+        await ensureSpace(blob.size);
+        if (navigator.storage && navigator.storage.persist) await navigator.storage.persist();
+        const zip = await JSZip.loadAsync(blob);
+        const images = [];
+        zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) images.push(entry); });
+        images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        if (!images.length) throw new Error("画像なし");
+        const coverBlob = await images[0].async("blob");
+        const id = await bookId(sourceUrl);
+        const dir = await (await booksRoot()).getDirectoryHandle(id, { create: true });
+        await writeOpfsFile(dir, "book.zip", blob);
+        await writeOpfsFile(dir, "cover", coverBlob);
+        const meta = {
+            sourceUrl,
+            name: bookTitle(sourceUrl),
+            savedAt: Date.now(),
+            size: blob.size,
+            coverType: coverBlob.type || "image/jpeg",
+            series: seriesData ? { i: seriesData.i, f: seriesData.f, t: seriesData.t || "", a: seriesData.a || "" } : null
+        };
+        await writeOpfsFile(dir, "meta.json", new Blob([JSON.stringify(meta)], { type: "application/json" }));
+    }
+
+    async function saveCurrentBook() {
+        if (!currentZipBlob || !currentFileUrl) { alert("保存できる本がありません"); return; }
+        showVolumeToast("端末に保存しています。");
+        try {
+            await saveZipToDevice(currentZipBlob, currentFileUrl, series);
+            statusTxt.textContent = "端末に保存しました";
+        } catch (err) {
+            alert(err.message || "保存に失敗しました");
+        } finally {
+            hideVolumeToast();
+        }
+    }
+
+    async function saveNextVolume() {
+        if (!series || series.i >= series.f.length - 1) return;
+        const url = series.f[series.i + 1];
+        const nextSeries = { i: series.i + 1, f: series.f, t: series.t, a: series.a };
+        showVolumeToast("次の巻を保存しています。");
+        try {
+            const saved = await readSavedZip(url);
+            if (saved) {
+                statusTxt.textContent = "次の巻は保存済みです";
+                return;
+            }
+            const response = await fetch(url);
+            if (!response.ok) throw new Error("取得失敗");
+            const blob = await response.blob();
+            await saveZipToDevice(blob, url, nextSeries);
+            statusTxt.textContent = "次の巻を端末に保存しました";
+        } catch (err) {
+            alert(err.message || "保存に失敗しました");
+        } finally {
+            hideVolumeToast();
+        }
+    }
+
+    function hideLocalShelf() {
+        localShelf.style.display = "none";
+        shelfCoverUrls.forEach((url) => URL.revokeObjectURL(url));
+        shelfCoverUrls = [];
+    }
+
+    async function showLocalShelf() {
+        closeViewerOverlay();
+        initScreen.style.display = "none";
+        thumbGrid.style.display = "none";
+        listTools.classList.remove("show");
+        localShelf.style.display = "block";
+        localShelfGrid.innerHTML = "読み込み中...";
+        shelfCoverUrls.forEach((url) => URL.revokeObjectURL(url));
+        shelfCoverUrls = [];
+        try {
+            let freeNote = "";
+            if (navigator.storage && navigator.storage.estimate) {
+                const estimate = await navigator.storage.estimate();
+                const freeMb = Math.max(0, Math.round(((estimate.quota || 0) - (estimate.usage || 0)) / 1024 / 1024));
+                freeNote = `空き約 ${freeMb} MB`;
+            }
+            const root = await booksRoot();
+            const books = [];
+            for await (const [name, handle] of root.entries()) {
+                if (handle.kind !== "directory") continue;
+                try {
+                    const metaFile = await (await handle.getFileHandle("meta.json")).getFile();
+                    const meta = JSON.parse(await metaFile.text());
+                    const coverFile = await (await handle.getFileHandle("cover")).getFile();
+                    books.push({ id: name, meta, coverFile, dir: handle });
+                } catch (err) {}
+            }
+            books.sort((a, b) => (b.meta.savedAt || 0) - (a.meta.savedAt || 0));
+            localShelfNote.textContent = books.length ? `${books.length}冊　${freeNote}` : `保存した本はありません。${freeNote}`;
+            localShelfGrid.innerHTML = "";
+            books.forEach((book) => {
+                const card = document.createElement("div");
+                card.className = "local-book";
+                const img = document.createElement("img");
+                const coverUrl = URL.createObjectURL(book.coverFile);
+                shelfCoverUrls.push(coverUrl);
+                img.src = coverUrl;
+                img.alt = book.meta.name || "";
+                const name = document.createElement("div");
+                name.className = "local-name";
+                name.textContent = book.meta.name || "無題";
+                const del = document.createElement("button");
+                del.type = "button";
+                del.className = "local-delete";
+                del.textContent = "削除";
+                card.appendChild(img);
+                card.appendChild(name);
+                card.appendChild(del);
+                card.onclick = () => openSavedBook(book);
+                del.onclick = (e) => { e.stopPropagation(); deleteSavedBook(book.id); };
+                localShelfGrid.appendChild(card);
+            });
+        } catch (err) {
+            localShelfNote.textContent = "";
+            localShelfGrid.textContent = err.message || "端末の本を読めません";
+        }
+    }
+
+    async function openSavedBook(book) {
+        const file = await (await book.dir.getFileHandle("book.zip")).getFile();
+        currentFileUrl = book.meta.sourceUrl || "";
+        series = book.meta.series || null;
+        applyBindDirection();
+        updateVolumeButtons();
+        if (series && currentFileUrl) updateSeriesLocation();
+        hideLocalShelf();
+        await processZip(file);
+    }
+
+    async function deleteSavedBook(id) {
+        if (!confirm("この本を端末から削除しますか？")) return;
+        const root = await booksRoot();
+        await root.removeEntry(id, { recursive: true });
+        showLocalShelf();
+    }
+
+    localShelfBtn.onclick = () => {
+        if (localShelf.style.display === "block") {
+            hideLocalShelf();
+            if (zipEntries.length) {
+                initScreen.style.display = "none";
+                thumbGrid.style.display = "grid";
+                updateSaveButtons();
+            } else {
+                initScreen.style.display = "flex";
+            }
+            return;
+        }
+        showLocalShelf();
+    };
+    document.getElementById("btn-save-book").onclick = () => saveCurrentBook();
+    document.getElementById("btn-save-book-view").onclick = (e) => { e.stopPropagation(); saveCurrentBook(); };
+    btnSaveNext.onclick = () => saveNextVolume();
+    btnSaveNextView.onclick = (e) => { e.stopPropagation(); saveNextVolume(); };
+
     async function processZip(blob, opts) {
         const stayOpen = !!(opts && opts.stayOpen);
         const startAt = (opts && opts.startAt) || 'resume';
         try {
+            currentZipBlob = blob;
+            hideLocalShelf();
             const zip = await JSZip.loadAsync(blob);
             const nextEntries = [];
             zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) nextEntries.push(entry); });
@@ -399,6 +674,7 @@
             updateResumeButton();
             updateOpenOtherButton();
             updateVolumeButtons();
+            updateSaveButtons();
             renderThumbnails();
             if (stayOpen) {
                 openViewer();
@@ -454,6 +730,8 @@
     };
 
     function openViewer() {
+        hideLocalShelf();
+        if (zipEntries.length) thumbGrid.style.display = "grid";
         hasOpenedViewer = true;
         updateResumeButton();
         overlay.style.display = 'flex';
