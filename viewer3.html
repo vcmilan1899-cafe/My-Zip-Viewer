@@ -175,6 +175,25 @@
     const btnSaveNext = document.getElementById('btn-save-next');
     const btnSaveNextView = document.getElementById('btn-save-next-view');
 
+    // スキャンzipは Shift_JIS ファイル名が多い。UTF-8として読むと名前が衝突し、
+    // JSZip が数百枚を1〜2エントリに潰す（クラッシュ・ブレイズ16巻など）。
+    function decodeZipFileName(bytes) {
+        const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        try {
+            return new TextDecoder('utf-8', { fatal: true }).decode(arr);
+        } catch (err) {}
+        try {
+            return new TextDecoder('shift_jis').decode(arr);
+        } catch (err) {}
+        let s = '';
+        for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);
+        return s;
+    }
+
+    function loadZip(blob) {
+        return JSZip.loadAsync(blob, { decodeFileName: decodeZipFileName });
+    }
+
     window.onload = async () => {
         applyOrientationViewMode();
         if ('serviceWorker' in navigator) {
@@ -183,7 +202,7 @@
         const params = new URLSearchParams(window.location.search);
         currentFileUrl = params.get('file');
         const wantAutosave = params.get('save') === '1';
-        series = parseSeriesFromHash(currentFileUrl);
+        series = await resolveSeries(currentFileUrl);
         applyBindDirection();
         updateVolumeButtons();
         if (currentFileUrl) {
@@ -226,33 +245,76 @@
         return false;
     }
 
-    function parseSeriesFromHash(fileUrl) {
+    function readSeriesPayload() {
         const raw = (location.hash || '').replace(/^#/, '');
         if (!raw) return null;
         try {
             const data = JSON.parse(new URLSearchParams(raw).get('s') || '');
-            if (!data || typeof data !== 'object') return null;
-            const files = Array.isArray(data.f) ? data.f.map(String) : [];
-            if (!files.length && fileUrl) files.push(fileUrl);
-            if (!files.length && !data.t && !data.a) return null;
-            let i = Number(data.i);
-            if (!Number.isInteger(i) || i < 0 || i >= files.length) {
-                i = fileUrl ? files.indexOf(fileUrl) : 0;
-                if (i < 0) i = 0;
-            }
-            return { i, f: files, t: data.t ? String(data.t) : '', a: data.a ? String(data.a) : '' };
+            return data && typeof data === 'object' ? data : null;
         } catch {
             return null;
         }
+    }
+
+    async function fetchBookshelfJson(base, relPath) {
+        const root = String(base || '').replace(/\/+$/, '');
+        if (!root) return null;
+        const urls = [root + relPath];
+        if (!relPath.endsWith('.json')) urls.push(root + relPath + '.json');
+        for (const url of urls) {
+            try {
+                const res = await fetch(url);
+                if (res.ok) return await res.json();
+            } catch (err) {}
+        }
+        return null;
+    }
+
+    function fileUrlFromBook(origin, book, fileBaseUrl) {
+        const q = ['inline=1'];
+        if (book && book.mtime) q.push('v=' + book.mtime);
+        if (fileBaseUrl && book && book.relPath) {
+            const enc = String(book.relPath).split('/').map(encodeURIComponent).join('/');
+            return String(fileBaseUrl).replace(/\/+$/, '') + '/' + enc + '?' + q.join('&');
+        }
+        const id = book && book.id ? book.id : '';
+        const name = encodeURIComponent((book && book.fileName) || 'book.zip');
+        return String(origin).replace(/\/+$/, '') + '/files/' + id + '/' + name + '?' + q.join('&');
+    }
+
+    async function fetchSeriesFiles(origin, titleId) {
+        const title = await fetchBookshelfJson(origin, '/api/title/' + encodeURIComponent(titleId));
+        if (!title || !Array.isArray(title.books) || !title.books.length) return [];
+        const cfg = await fetchBookshelfJson(origin, '/api/config');
+        const fileBaseUrl = cfg && cfg.fileBaseUrl ? String(cfg.fileBaseUrl) : '';
+        return title.books.map((b) => fileUrlFromBook(origin, b, fileBaseUrl));
+    }
+
+    async function resolveSeries(fileUrl) {
+        const data = readSeriesPayload();
+        if (!data) return null;
+        let files = Array.isArray(data.f) ? data.f.map(String) : [];
+        if (!files.length && data.a && data.t) {
+            files = await fetchSeriesFiles(data.a, data.t);
+        }
+        if (!files.length && fileUrl) files.push(fileUrl);
+        if (!files.length && !data.t && !data.a) return null;
+        let i = Number(data.i);
+        if (!Number.isInteger(i) || i < 0 || i >= files.length) {
+            i = fileUrl ? files.indexOf(fileUrl) : 0;
+            if (i < 0) i = 0;
+        }
+        return { i, f: files, t: data.t ? String(data.t) : '', a: data.a ? String(data.a) : '' };
     }
 
     function seriesLocation(fileUrl, seriesData) {
         const u = new URL(location.href);
         u.searchParams.set('file', fileUrl);
         u.searchParams.set('dir', state.direction);
-        const payload = { i: seriesData.i, f: seriesData.f };
+        const payload = { i: seriesData.i };
         if (seriesData.t) payload.t = seriesData.t;
         if (seriesData.a) payload.a = seriesData.a;
+        if (!seriesData.t || !seriesData.a) payload.f = seriesData.f;
         u.hash = 's=' + encodeURIComponent(JSON.stringify(payload));
         return u.pathname + u.search + u.hash;
     }
@@ -545,7 +607,7 @@
         if (navigator.storage && navigator.storage.persist) {
             try { await navigator.storage.persist(); } catch (err) {}
         }
-        const zip = await JSZip.loadAsync(blob);
+        const zip = await loadZip(blob);
         const images = [];
         zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) images.push(entry); });
         images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
@@ -708,7 +770,7 @@
         try {
             currentZipBlob = blob;
             hideLocalShelf();
-            const zip = await JSZip.loadAsync(blob);
+            const zip = await loadZip(blob);
             const nextEntries = [];
             zip.forEach((path, entry) => { if (/\.(jpe?g|png|gif|webp)$/i.test(path)) nextEntries.push(entry); });
             nextEntries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
