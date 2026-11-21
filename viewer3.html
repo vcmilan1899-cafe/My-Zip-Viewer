@@ -68,6 +68,18 @@
         #btn-prev-vol:disabled, #btn-next-vol:disabled { opacity: .35; cursor: default; }
         #volume-toast { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.35); z-index: 300; opacity: 0; visibility: hidden; transition: opacity 0.28s ease, visibility 0.28s ease; pointer-events: none; }
         #volume-toast.show { opacity: 1; visibility: visible; pointer-events: auto; }
+        #dl-pill { position: fixed; top: calc(max(15px, env(safe-area-inset-top, 15px)) + 52px); left: 50%; transform: translateX(-50%); z-index: 310; display: none; align-items: center; gap: 8px; max-width: calc(100vw - 32px); box-sizing: border-box; background: rgba(20,20,20,0.88); color: #fff; border: 1px solid #555; border-radius: 18px; padding: 5px 6px 5px 12px; font-size: 12px; white-space: nowrap; }
+        #dl-pill.show { display: flex; }
+        #dl-pill-bar { position: relative; width: 64px; height: 4px; flex-shrink: 0; background: #555; border-radius: 2px; overflow: hidden; }
+        #dl-pill-bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--accent-color); }
+        #dl-pill.indeterminate #dl-pill-bar i { width: 30%; animation: dl-slide 1.2s ease-in-out infinite; }
+        @keyframes dl-slide { from { left: -30%; } to { left: 100%; } }
+        #dl-pill.done #dl-pill-bar, #dl-pill.error #dl-pill-bar { display: none; }
+        #dl-pill.error { border-color: #a55; }
+        #dl-pill-text { overflow: hidden; text-overflow: ellipsis; }
+        #dl-pill button { background: #444; color: #fff; border: 1px solid #666; border-radius: 12px; padding: 3px 10px; font-size: 12px; cursor: pointer; flex-shrink: 0; }
+        #dl-pill-retry { display: none; }
+        #dl-pill.error #dl-pill-retry { display: inline-block; }
         #volume-toast span { background: rgba(0,0,0,0.75); color: #fff; padding: 16px 28px; border-radius: 12px; font-size: 16px; font-weight: bold; letter-spacing: 0.04em; text-align: center; }
     </style>
 </head>
@@ -128,6 +140,12 @@
         </div>
 </div>
 <div id="volume-toast" aria-live="polite"><span></span></div>
+<div id="dl-pill" role="status" aria-live="polite">
+    <span id="dl-pill-bar"><i></i></span>
+    <span id="dl-pill-text"></span>
+    <button type="button" id="dl-pill-retry">再試行</button>
+    <button type="button" id="dl-pill-close" aria-label="中止">×</button>
+</div>
 
 <script>
     let zipEntries = [], blobCache = new Map(), currentIndex = 0, idleTimer, currentFileUrl = "";
@@ -446,6 +464,16 @@
     openOtherBtn.onclick = () => fileInput.click();
 
     async function loadFromUrl(url, opts) {
+        // 裏で取得中の巻へ移動したときは、二重にダウンロードせず完了を待って使う
+        if (bgSave && bgSave.url === url) {
+            statusTxt.textContent = "取得中の巻を待っています...";
+            try {
+                const blob = await bgSave.promise;
+                return processZip(blob, opts);
+            } catch (err) {
+                if (err && err.name === 'AbortError') { statusTxt.textContent = "取得を中止しました"; return false; }
+            }
+        }
         const saved = await readSavedZip(url);
         if (saved) {
             statusTxt.textContent = "端末の本を開いています";
@@ -640,27 +668,133 @@
         }
     }
 
-    async function saveNextVolume() {
-        if (!series || series.i >= series.f.length - 1) return;
-        const url = series.f[series.i + 1];
-        const nextSeries = { i: series.i + 1, f: series.f, t: series.t, a: series.a };
-        showVolumeToast("次の巻を保存しています。");
-        try {
-            const saved = await readSavedZip(url);
-            if (saved) {
-                statusTxt.textContent = "次の巻は保存済みです";
+    // 次の巻の保存は画面をふさがずに裏で進める。進捗はヘッダー上の小さな表示に出し、
+    // ×で中止、失敗時は再試行できる。同時に動かすのは1冊だけ。
+    const dlPill = document.getElementById('dl-pill');
+    const dlPillBar = dlPill.querySelector('#dl-pill-bar i');
+    const dlPillText = document.getElementById('dl-pill-text');
+    let bgSave = null;      // { url, series, label, controller, promise }
+    let bgSaveFailed = null; // 再試行用 { url, series, label }
+    let dlPillHideTimer = null;
+
+    function formatMb(bytes) {
+        const mb = bytes / 1024 / 1024;
+        return mb >= 100 ? mb.toFixed(0) : mb.toFixed(1);
+    }
+
+    function showDlPill(text, mode, ratio) {
+        clearTimeout(dlPillHideTimer);
+        dlPill.classList.remove('done', 'error', 'indeterminate');
+        if (mode) dlPill.classList.add(mode);
+        dlPillBar.style.width = mode === 'indeterminate' ? '' : Math.round((ratio || 0) * 100) + '%';
+        dlPillText.textContent = text;
+        dlPill.classList.add('show');
+    }
+
+    function hideDlPill(delay) {
+        clearTimeout(dlPillHideTimer);
+        if (delay) dlPillHideTimer = setTimeout(() => dlPill.classList.remove('show'), delay);
+        else dlPill.classList.remove('show');
+    }
+
+    function volumeLabel(index) {
+        return (index + 1) + '巻';
+    }
+
+    async function fetchWithProgress(url, signal, onProgress) {
+        const response = await fetch(url, { signal });
+        if (!response.ok) throw new Error("取得失敗");
+        const total = Number(response.headers.get('Content-Length')) || 0;
+        if (!response.body || !response.body.getReader) {
+            const blob = await response.blob();
+            onProgress(blob.size, blob.size);
+            return blob;
+        }
+        const reader = response.body.getReader();
+        const chunks = [];
+        let loaded = 0;
+        let lastPaint = 0;
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            loaded += value.byteLength;
+            const now = Date.now();
+            if (now - lastPaint > 250) { lastPaint = now; onProgress(loaded, total); }
+        }
+        onProgress(loaded, total);
+        return new Blob(chunks, { type: response.headers.get('Content-Type') || 'application/zip' });
+    }
+
+    function updateSaveNextButtons() {
+        const busy = !!bgSave;
+        [btnSaveNext, btnSaveNextView].forEach((b) => {
+            b.disabled = busy;
+            b.textContent = busy ? "次の巻を取得中…" : "次の巻も保存";
+        });
+    }
+
+    function startBackgroundSave(url, seriesData, label) {
+        const controller = new AbortController();
+        const job = { url, series: seriesData, label, controller, promise: null };
+        bgSave = job;
+        bgSaveFailed = null;
+        updateSaveNextButtons();
+        showDlPill(`${label}を取得中…`, 'indeterminate');
+        job.promise = (async () => {
+            const blob = await fetchWithProgress(url, controller.signal, (loaded, total) => {
+                if (bgSave !== job) return;
+                if (total) showDlPill(`${label} ${Math.floor(loaded / total * 100)}%（${formatMb(loaded)}/${formatMb(total)}MB）`, '', loaded / total);
+                else showDlPill(`${label} ${formatMb(loaded)}MB`, 'indeterminate');
+            });
+            if (controller.signal.aborted) throw new DOMException('aborted', 'AbortError');
+            showDlPill(`${label}を端末に保存中…`, 'indeterminate');
+            await saveZipToDevice(blob, url, seriesData);
+            return blob;
+        })();
+        job.promise.then(() => {
+            showDlPill(`${label}を保存しました`, 'done');
+            hideDlPill(4000);
+        }, (err) => {
+            if (err && err.name === 'AbortError') {
+                hideDlPill();
+                statusTxt.textContent = `${label}の取得を中止しました`;
                 return;
             }
-            const response = await fetch(url);
-            if (!response.ok) throw new Error("取得失敗");
-            const blob = await response.blob();
-            await saveZipToDevice(blob, url, nextSeries);
-            statusTxt.textContent = "次の巻を端末に保存しました";
-        } catch (err) {
-            alert(err.message || "保存に失敗しました");
-        } finally {
-            hideVolumeToast();
+            bgSaveFailed = { url, series: seriesData, label };
+            showDlPill(`${label}の保存に失敗: ${(err && err.message) || "通信エラー"}`, 'error');
+        }).finally(() => {
+            if (bgSave === job) bgSave = null;
+            updateSaveNextButtons();
+        });
+        return job;
+    }
+
+    document.getElementById('dl-pill-close').onclick = (e) => {
+        e.stopPropagation();
+        if (bgSave) bgSave.controller.abort();
+        else { bgSaveFailed = null; hideDlPill(); }
+    };
+    document.getElementById('dl-pill-retry').onclick = (e) => {
+        e.stopPropagation();
+        if (!bgSaveFailed || bgSave) return;
+        const f = bgSaveFailed;
+        startBackgroundSave(f.url, f.series, f.label);
+    };
+
+    async function saveNextVolume() {
+        if (!series || series.i >= series.f.length - 1) return;
+        if (bgSave) { clearTimeout(dlPillHideTimer); dlPill.classList.add('show'); return; }
+        const url = series.f[series.i + 1];
+        const nextSeries = { i: series.i + 1, f: series.f, t: series.t, a: series.a };
+        const label = "次の巻（" + volumeLabel(nextSeries.i) + "）";
+        const saved = await readSavedZip(url);
+        if (saved) {
+            showDlPill(`${label}は保存済みです`, 'done');
+            hideDlPill(3000);
+            return;
         }
+        startBackgroundSave(url, nextSeries, label);
     }
 
     function hideLocalShelf() {
