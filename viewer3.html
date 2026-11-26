@@ -95,13 +95,14 @@
 </header>
 
 <div id="init-screen">
-    <div id="init-msg">書庫から読むか、ファイルを選択してください。<br>外出用は開いたあと「この本を端末に保存」を押してください。</div>
+    <div id="init-msg">書庫から読むか、ファイルを選択してください。<br>外出用は開いたあと「この本をオフライン用に保存」を押してください。</div>
     <label class="btn-primary">ファイルを選択<input type="file" id="file-input" accept=".zip"></label>
 </div>
 
 <div id="list-tools">
-    <button type="button" id="btn-save-book">この本を端末に保存</button>
+    <button type="button" id="btn-save-book">この本をオフライン用に保存</button>
     <button type="button" id="btn-save-next">次の巻も保存</button>
+    <button type="button" id="btn-save-all">全巻を保存</button>
 </div>
 
 <div id="thumbnail-grid"></div>
@@ -134,8 +135,9 @@
             <button type="button" id="btn-next-vol">次の巻</button>
         </div>
         <div id="save-row">
-            <button type="button" id="btn-save-book-view">この本を端末に保存</button>
+            <button type="button" id="btn-save-book-view">この本をオフライン用に保存</button>
             <button type="button" id="btn-save-next-view">次の巻も保存</button>
+            <button type="button" id="btn-save-all-view">全巻を保存</button>
         </div>
         </div>
 </div>
@@ -192,6 +194,8 @@
     const saveRow = document.getElementById('save-row');
     const btnSaveNext = document.getElementById('btn-save-next');
     const btnSaveNextView = document.getElementById('btn-save-next-view');
+    const btnSaveAll = document.getElementById('btn-save-all');
+    const btnSaveAllView = document.getElementById('btn-save-all-view');
 
     // スキャンzipは Shift_JIS ファイル名が多い。UTF-8として読むと名前が衝突し、
     // JSZip が数百枚を1〜2エントリに潰す（クラッシュ・ブレイズ16巻など）。
@@ -219,7 +223,8 @@
         }
         const params = new URLSearchParams(window.location.search);
         currentFileUrl = params.get('file');
-        const wantAutosave = params.get('save') === '1';
+        const wantSaveAll = params.get('saveall') === '1';
+        const wantAutosave = params.get('save') === '1' || wantSaveAll;
         series = await resolveSeries(currentFileUrl);
         applyBindDirection();
         updateVolumeButtons();
@@ -227,6 +232,8 @@
             const ok = await loadFromUrl(currentFileUrl, { autosave: wantAutosave });
             if (wantAutosave) clearSaveQuery();
             if (!ok) await openShelfIfAny();
+            // 書庫の「全巻まとめてオフライン用に保存」: 開いた巻を保存したあと、残りの巻を裏で順に保存する
+            else if (wantSaveAll) saveAllVolumes();
             return;
         }
         await openShelfIfAny();
@@ -234,8 +241,9 @@
 
     function clearSaveQuery() {
         const u = new URL(location.href);
-        if (!u.searchParams.has('save')) return;
+        if (!u.searchParams.has('save') && !u.searchParams.has('saveall')) return;
         u.searchParams.delete('save');
+        u.searchParams.delete('saveall');
         history.replaceState(null, '', u.pathname + u.search + u.hash);
     }
 
@@ -578,7 +586,7 @@
     function openBookDb() {
         return new Promise((resolve, reject) => {
             if (!window.indexedDB) {
-                reject(new Error("このブラウザでは端末保存に対応していません"));
+                reject(new Error("このブラウザはオフライン用の保存に対応していません"));
                 return;
             }
             const req = indexedDB.open("zip-viewer-books", 1);
@@ -588,14 +596,14 @@
                 }
             };
             req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error || new Error("端末保存を開始できません"));
+            req.onerror = () => reject(req.error || new Error("オフライン用の保存を開始できません"));
         });
     }
 
     function idbDone(req) {
         return new Promise((resolve, reject) => {
             req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error || new Error("端末保存に失敗しました"));
+            req.onerror = () => reject(req.error || new Error("オフライン用の保存に失敗しました"));
         });
     }
 
@@ -628,6 +636,22 @@
         saveRow.classList.toggle("show", canSave);
         btnSaveNext.style.display = canSaveNext ? "" : "none";
         btnSaveNextView.style.display = canSaveNext ? "" : "none";
+        const canSaveAll = !!(series && series.f && series.f.length > 1);
+        btnSaveAll.style.display = canSaveAll ? "" : "none";
+        btnSaveAllView.style.display = canSaveAll ? "" : "none";
+    }
+
+    // 保存済みかどうかだけを見る (zip 本体は読み出さない)
+    async function hasSavedBook(sourceUrl) {
+        if (!sourceUrl || !window.indexedDB) return false;
+        try {
+            const db = await openBookDb();
+            const n = await idbDone(db.transaction("books").objectStore("books").count(bookId(sourceUrl)));
+            db.close();
+            return n > 0;
+        } catch (err) {
+            return false;
+        }
     }
 
     async function saveZipToDevice(blob, sourceUrl, seriesData) {
@@ -657,10 +681,10 @@
 
     async function saveCurrentBook() {
         if (!currentZipBlob || !currentFileUrl) { alert("保存できる本がありません"); return; }
-        showVolumeToast("端末に保存しています。");
+        showVolumeToast("オフライン用に保存しています。");
         try {
             await saveZipToDevice(currentZipBlob, currentFileUrl, series);
-            statusTxt.textContent = "端末に保存しました";
+            statusTxt.textContent = "オフライン用に保存しました";
         } catch (err) {
             alert(err.message || "保存に失敗しました");
         } finally {
@@ -727,11 +751,69 @@
     }
 
     function updateSaveNextButtons() {
-        const busy = !!bgSave;
+        const busy = !!bgSave || !!saveAllJob;
         [btnSaveNext, btnSaveNextView].forEach((b) => {
             b.disabled = busy;
-            b.textContent = busy ? "次の巻を取得中…" : "次の巻も保存";
+            b.textContent = busy && !saveAllJob ? "次の巻を取得中…" : "次の巻も保存";
         });
+        [btnSaveAll, btnSaveAllView].forEach((b) => {
+            b.disabled = busy;
+            b.textContent = saveAllJob ? `全巻を保存中（${saveAllJob.pos}/${saveAllJob.total}）` : "全巻を保存";
+        });
+    }
+
+    // 全巻の保存: 保存済みの巻は飛ばし、残りを 1 冊ずつ裏で保存する。
+    // ×で全体を中止。失敗した巻があれば最後にまとめて知らせ、再試行で残りだけやり直す。
+    let saveAllJob = null; // { total, pos, cancelled }
+
+    async function saveAllVolumes() {
+        if (!series || !series.f || series.f.length < 2) return;
+        if (bgSave || saveAllJob) { clearTimeout(dlPillHideTimer); dlPill.classList.add('show'); return; }
+        const base = { f: series.f.slice(), t: series.t, a: series.a };
+        const total = base.f.length;
+        const job = { total, pos: 0, cancelled: false };
+        saveAllJob = job;
+        bgSaveFailed = null;
+        let saved = 0, already = 0;
+        const failed = [];
+        let stopMessage = "";
+        try {
+            for (let i = 0; i < total; i++) {
+                if (job.cancelled) break;
+                job.pos = i + 1;
+                updateSaveNextButtons();
+                const url = base.f[i];
+                if (await hasSavedBook(url)) { already++; continue; }
+                const label = `全${total}巻 ${volumeLabel(i)}`;
+                const run = startBackgroundSave(url, { i, f: base.f, t: base.t, a: base.a }, label);
+                try {
+                    await run.promise;
+                    saved++;
+                } catch (err) {
+                    if (err && err.name === 'AbortError') { job.cancelled = true; break; }
+                    failed.push(i);
+                    // 容量不足は次の巻でも同じなので止める
+                    if (err && /空き容量/.test(err.message || '')) { stopMessage = err.message; break; }
+                }
+            }
+        } finally {
+            if (saveAllJob === job) saveAllJob = null;
+            updateSaveNextButtons();
+        }
+        if (job.cancelled) {
+            hideDlPill();
+            statusTxt.textContent = `全巻の保存を中止しました（${saved}冊保存）`;
+            return;
+        }
+        if (failed.length || stopMessage) {
+            bgSaveFailed = { all: true };
+            const names = failed.map(volumeLabel).join('・');
+            showDlPill(stopMessage ? `${stopMessage}（${saved}冊保存）` : `${names}の保存に失敗（${saved}冊保存）`, 'error');
+            return;
+        }
+        showDlPill(`全${total}巻を保存しました（新しく${saved}冊・保存済み${already}冊）`, 'done');
+        hideDlPill(6000);
+        statusTxt.textContent = `全${total}巻 オフライン用に保存済み`;
     }
 
     function startBackgroundSave(url, seriesData, label) {
@@ -748,7 +830,7 @@
                 else showDlPill(`${label} ${formatMb(loaded)}MB`, 'indeterminate');
             });
             if (controller.signal.aborted) throw new DOMException('aborted', 'AbortError');
-            showDlPill(`${label}を端末に保存中…`, 'indeterminate');
+            showDlPill(`${label}をオフライン用に保存中…`, 'indeterminate');
             await saveZipToDevice(blob, url, seriesData);
             return blob;
         })();
@@ -772,19 +854,21 @@
 
     document.getElementById('dl-pill-close').onclick = (e) => {
         e.stopPropagation();
+        if (saveAllJob) saveAllJob.cancelled = true;
         if (bgSave) bgSave.controller.abort();
-        else { bgSaveFailed = null; hideDlPill(); }
+        else if (!saveAllJob) { bgSaveFailed = null; hideDlPill(); }
     };
     document.getElementById('dl-pill-retry').onclick = (e) => {
         e.stopPropagation();
-        if (!bgSaveFailed || bgSave) return;
+        if (!bgSaveFailed || bgSave || saveAllJob) return;
         const f = bgSaveFailed;
+        if (f.all) { saveAllVolumes(); return; }
         startBackgroundSave(f.url, f.series, f.label);
     };
 
     async function saveNextVolume() {
         if (!series || series.i >= series.f.length - 1) return;
-        if (bgSave) { clearTimeout(dlPillHideTimer); dlPill.classList.add('show'); return; }
+        if (bgSave || saveAllJob) { clearTimeout(dlPillHideTimer); dlPill.classList.add('show'); return; }
         const url = series.f[series.i + 1];
         const nextSeries = { i: series.i + 1, f: series.f, t: series.t, a: series.a };
         const label = "次の巻（" + volumeLabel(nextSeries.i) + "）";
@@ -896,6 +980,8 @@
     document.getElementById("btn-save-book-view").onclick = (e) => { e.stopPropagation(); saveCurrentBook(); };
     btnSaveNext.onclick = () => saveNextVolume();
     btnSaveNextView.onclick = (e) => { e.stopPropagation(); saveNextVolume(); };
+    btnSaveAll.onclick = () => saveAllVolumes();
+    btnSaveAllView.onclick = (e) => { e.stopPropagation(); saveAllVolumes(); };
 
     async function processZip(blob, opts) {
         const stayOpen = !!(opts && opts.stayOpen);
@@ -927,9 +1013,9 @@
             if (autosave && currentFileUrl && currentZipBlob) {
                 try {
                     await saveZipToDevice(currentZipBlob, currentFileUrl, series);
-                    statusTxt.textContent = `${zipEntries.length}枚・端末に保存済み`;
+                    statusTxt.textContent = `${zipEntries.length}枚・オフライン用に保存済み`;
                 } catch (err) {
-                    alert(err.message || "端末への保存に失敗しました");
+                    alert(err.message || "オフライン用の保存に失敗しました");
                 }
             }
             if (stayOpen) {

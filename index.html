@@ -95,12 +95,12 @@
 </header>
 
 <div id="init-screen">
-    <div id="init-msg">書庫から読むか、ファイルを選択してください。<br>外出用は開いたあと「この本を端末に保存」を押してください。</div>
+    <div id="init-msg">書庫から読むか、ファイルを選択してください。<br>外出用は開いたあと「この本をオフライン用に保存」を押してください。</div>
     <label class="btn-primary">ファイルを選択<input type="file" id="file-input" accept=".zip"></label>
 </div>
 
 <div id="list-tools">
-    <button type="button" id="btn-save-book">この本を端末に保存</button>
+    <button type="button" id="btn-save-book">この本をオフライン用に保存</button>
     <button type="button" id="btn-save-next">次の巻も保存</button>
 </div>
 
@@ -134,7 +134,7 @@
             <button type="button" id="btn-next-vol">次の巻</button>
         </div>
         <div id="save-row">
-            <button type="button" id="btn-save-book-view">この本を端末に保存</button>
+            <button type="button" id="btn-save-book-view">この本をオフライン用に保存</button>
             <button type="button" id="btn-save-next-view">次の巻も保存</button>
         </div>
         </div>
@@ -578,7 +578,7 @@
     function openBookDb() {
         return new Promise((resolve, reject) => {
             if (!window.indexedDB) {
-                reject(new Error("このブラウザでは端末保存に対応していません"));
+                reject(new Error("このブラウザはオフライン用の保存に対応していません"));
                 return;
             }
             const req = indexedDB.open("zip-viewer-books", 1);
@@ -588,14 +588,14 @@
                 }
             };
             req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error || new Error("端末保存を開始できません"));
+            req.onerror = () => reject(req.error || new Error("オフライン用の保存を開始できません"));
         });
     }
 
     function idbDone(req) {
         return new Promise((resolve, reject) => {
             req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error || new Error("端末保存に失敗しました"));
+            req.onerror = () => reject(req.error || new Error("オフライン用の保存に失敗しました"));
         });
     }
 
@@ -657,10 +657,10 @@
 
     async function saveCurrentBook() {
         if (!currentZipBlob || !currentFileUrl) { alert("保存できる本がありません"); return; }
-        showVolumeToast("端末に保存しています。");
+        showVolumeToast("オフライン用に保存しています。");
         try {
             await saveZipToDevice(currentZipBlob, currentFileUrl, series);
-            statusTxt.textContent = "端末に保存しました";
+            statusTxt.textContent = "オフライン用に保存しました";
         } catch (err) {
             alert(err.message || "保存に失敗しました");
         } finally {
@@ -748,7 +748,7 @@
                 else showDlPill(`${label} ${formatMb(loaded)}MB`, 'indeterminate');
             });
             if (controller.signal.aborted) throw new DOMException('aborted', 'AbortError');
-            showDlPill(`${label}を端末に保存中…`, 'indeterminate');
+            showDlPill(`${label}をオフライン用に保存中…`, 'indeterminate');
             await saveZipToDevice(blob, url, seriesData);
             return blob;
         })();
@@ -927,9 +927,9 @@
             if (autosave && currentFileUrl && currentZipBlob) {
                 try {
                     await saveZipToDevice(currentZipBlob, currentFileUrl, series);
-                    statusTxt.textContent = `${zipEntries.length}枚・端末に保存済み`;
+                    statusTxt.textContent = `${zipEntries.length}枚・オフライン用に保存済み`;
                 } catch (err) {
-                    alert(err.message || "端末への保存に失敗しました");
+                    alert(err.message || "オフライン用の保存に失敗しました");
                 }
             }
             if (stayOpen) {
